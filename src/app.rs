@@ -589,7 +589,7 @@ fn fzf_transform_enter(
         let reload_actions = format!("{exe} __fzf-action-items {journey_id}");
         let preview = format!("{exe} __fzf-preview {journey_id}");
         return Ok(format!(
-            "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query"
+            "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search"
         ));
     }
 
@@ -808,7 +808,7 @@ fn fzf_transform_esc(
         let reload_actions = format!("{exe} __fzf-action-items {journey_id}");
         let preview = format!("{exe} __fzf-preview {journey_id}");
         return Ok(format!(
-            "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query"
+            "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search"
         ));
     }
 
@@ -830,7 +830,7 @@ fn fzf_transform_esc(
                 let reload_actions = format!("{exe} __fzf-action-items {journey_id}");
                 let preview = format!("{exe} __fzf-preview {journey_id}");
                 return Ok(format!(
-                    "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query"
+                    "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search"
                 ));
             }
         }
