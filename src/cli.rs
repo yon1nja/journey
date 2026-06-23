@@ -7,15 +7,18 @@ use crate::models::JourneyStatus;
 #[derive(Debug, Parser)]
 #[command(name = "journey")]
 #[command(about = "Context persistence for engineering efforts")]
+#[command(
+    after_help = "Run `journey` with no subcommand to start the interactive Journey starter."
+)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Create a new Journey.
-    New(TextArgs),
+    /// Create a new Journey without opening the interactive starter.
+    New(NewArgs),
     /// Link a git repository or worktree to the current Journey.
     Link {
         repo_path: PathBuf,
@@ -24,40 +27,49 @@ pub enum Commands {
         #[arg(long)]
         journey: Option<String>,
     },
-    /// Capture git state for linked repos and regenerate NOW.md.
-    Checkpoint {
-        #[arg(short, long)]
-        message: Option<String>,
+    /// Unlink a repository/worktree from the current Journey.
+    Unlink {
+        repo_name: String,
         #[arg(long)]
         journey: Option<String>,
     },
-    /// Resume a Journey and print derived context.
-    Resume {
-        id: Option<String>,
-        #[arg(long)]
-        apply: bool,
-    },
+    /// Mark a Journey active.
+    Resume(ContextIdArgs),
     /// List known Journeys.
     List {
+        /// Initial fzf query; hard filter with --non-interactive.
         #[arg(long)]
         status: Option<JourneyStatus>,
+        /// Print table output instead of opening the real fzf UI.
+        #[arg(long)]
+        non_interactive: bool,
+    },
+    #[command(name = "__fzf-candidates", hide = true)]
+    FzfCandidates {
+        #[arg(long)]
+        query: Option<String>,
+    },
+    #[command(name = "__fzf-preview", hide = true)]
+    FzfPreview { id: String },
+    #[command(name = "__fzf-action-menu", hide = true)]
+    FzfActionMenu { id: String },
+    #[command(name = "__fzf-new-journey", hide = true)]
+    FzfNewJourney {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
     },
     /// Print a one-screen Journey summary.
     Status { id: Option<String> },
-    /// Append a note event.
-    Note(ContextTextArgs),
-    /// Append a decision event.
-    Decide(DecideArgs),
-    /// Open a question.
-    Ask(ContextTextArgs),
-    /// Resolve a question.
-    Resolve(ResolveArgs),
-    /// Replace next actions.
-    Next(NextArgs),
     /// Manage Journey-local docs.
     Doc {
         #[command(subcommand)]
         command: DocCommands,
+    },
+    /// Inspect or repair Journey indexes.
+    Doctor {
+        /// Rebuild the worktree attachment index from active/paused Journeys.
+        #[arg(long)]
+        repair: bool,
     },
     /// Mark a Journey paused.
     Pause(ContextIdArgs),
@@ -68,44 +80,11 @@ pub enum Commands {
 }
 
 #[derive(Debug, Args)]
-pub struct TextArgs {
+pub struct NewArgs {
     #[arg(required = true, num_args = 1..)]
     pub text: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct ContextTextArgs {
-    #[arg(required = true, num_args = 1..)]
-    pub text: Vec<String>,
-    #[arg(long)]
-    pub journey: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct DecideArgs {
-    #[arg(required = true, num_args = 1..)]
-    pub text: Vec<String>,
-    #[arg(long)]
-    pub because: Option<String>,
-    #[arg(long)]
-    pub journey: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct ResolveArgs {
-    pub qid: String,
-    #[arg(required = true, num_args = 1..)]
-    pub answer: Vec<String>,
-    #[arg(long)]
-    pub journey: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct NextArgs {
-    #[arg(required = true, num_args = 1..)]
-    pub items: Vec<String>,
-    #[arg(long)]
-    pub journey: Option<String>,
+    #[arg(short, long)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Args)]
