@@ -38,7 +38,7 @@ pub fn run(cli: Cli) -> Result<String> {
             non_interactive,
         ),
         Some(Commands::FzfCandidates { query }) => fzf_candidates(&home, query.as_deref()),
-        Some(Commands::FzfPreview { id }) => picker::preview_for_id(&home, &id),
+        Some(Commands::FzfPreview { id }) => fzf_preview(&home, &id),
         Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
         Some(Commands::Doctor { repair }) => doctor(&home, repair),
@@ -124,6 +124,23 @@ fn render_journey_table(rows: &[IndexEntry]) -> Result<String> {
         ));
     }
     Ok(out.trim_end().to_string())
+}
+
+fn fzf_preview(home: &Path, raw_id: &str) -> Result<String> {
+    // Extract journey ID from prefixed item keys
+    let journey_id = if let Some(rest) = raw_id.strip_prefix("act:") {
+        rest.split(':').next().unwrap_or(rest)
+    } else if let Some(rest) = raw_id.strip_prefix("repo:") {
+        rest.split(':').next().unwrap_or(rest)
+    } else if let Some(rest) = raw_id.strip_prefix("wiz:") {
+        rest.split(':').next().unwrap_or(rest)
+    } else if raw_id.starts_with("new:") {
+        // New journey has no ID yet — show placeholder
+        return Ok(picker::build_new_journey_preview(raw_id));
+    } else {
+        raw_id
+    };
+    picker::preview_for_id(home, journey_id)
 }
 
 fn fzf_candidates(home: &Path, query: Option<&str>) -> Result<String> {

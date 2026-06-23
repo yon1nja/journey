@@ -125,6 +125,39 @@ fn matches_query(entry: &IndexEntry, query: Option<&str>) -> bool {
         .all(|term| haystack.contains(term))
 }
 
+pub fn build_new_journey_preview(item_key: &str) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{}", color(style("New Journey").cyan().bold()));
+    out.push('\n');
+
+    let rest = item_key.strip_prefix("new:").unwrap_or(item_key);
+    let parts: Vec<&str> = rest.splitn(3, ':').collect();
+    match parts.first().copied() {
+        Some("title") => {
+            let _ = writeln!(out, "{} {}", label("step:"), "Enter a title");
+            let _ = writeln!(
+                out,
+                "\n{}",
+                color(style("Type your journey title in the search field and press Enter.").dim())
+            );
+        }
+        Some("desc") => {
+            let title = parts.get(1).unwrap_or(&"");
+            let _ = writeln!(out, "{} {}", label("title:"), title);
+            let _ = writeln!(out, "{} {}", label("step:"), "Enter a description (optional)");
+            let _ = writeln!(
+                out,
+                "\n{}",
+                color(style("Type a description or press Enter to skip.").dim())
+            );
+        }
+        _ => {
+            let _ = writeln!(out, "{}", color(style("Setting up new journey...").dim()));
+        }
+    }
+    out
+}
+
 pub fn preview_for_id(home: &Path, id: &str) -> Result<String> {
     storage::ensure_home(home)?;
     let journey_path = storage::journey_dir(home, id);
