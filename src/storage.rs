@@ -6,13 +6,15 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use tempfile::NamedTempFile;
 
-use crate::models::{Index, IndexEntry, JourneyFile, JourneyStatus, RepoRef};
+use crate::models::{
+    Index, IndexEntry, JourneyFile, JourneyStatus, RepoRef, WorktreeAttachment, WorktreeIndex,
+};
 
 pub const INDEX_FILE: &str = "index.yaml";
+pub const WORKTREE_INDEX_FILE: &str = "worktree-index.yaml";
 pub const JOURNEYS_DIR: &str = "journeys";
 pub const JOURNEY_FILE: &str = "journey.yaml";
 pub const JOURNAL_FILE: &str = "journal.jsonl";
-pub const NOW_FILE: &str = "NOW.md";
 pub const DOCS_DIR: &str = "docs";
 pub const WORKTREES_DIR: &str = "worktrees";
 
@@ -38,6 +40,9 @@ pub fn ensure_home(home: &Path) -> Result<()> {
     if !home.join(INDEX_FILE).exists() {
         write_yaml_atomic(&home.join(INDEX_FILE), &Index::default())?;
     }
+    if !home.join(WORKTREE_INDEX_FILE).exists() {
+        write_yaml_atomic(&home.join(WORKTREE_INDEX_FILE), &WorktreeIndex::default())?;
+    }
     Ok(())
 }
 
@@ -55,6 +60,18 @@ pub fn load_index(home: &Path) -> Result<Index> {
 
 pub fn save_index(home: &Path, index: &Index) -> Result<()> {
     write_yaml_atomic(&home.join(INDEX_FILE), index)
+}
+
+pub fn load_worktree_index(home: &Path) -> Result<WorktreeIndex> {
+    let path = home.join(WORKTREE_INDEX_FILE);
+    if !path.exists() {
+        return Ok(WorktreeIndex::default());
+    }
+    read_yaml(&path)
+}
+
+pub fn save_worktree_index(home: &Path, index: &WorktreeIndex) -> Result<()> {
+    write_yaml_atomic(&home.join(WORKTREE_INDEX_FILE), index)
 }
 
 pub fn load_journey(path: &Path) -> Result<JourneyFile> {
@@ -97,10 +114,19 @@ pub fn resolve_context(
         }
     }
 
-    bail!("not inside a Journey folder; pass an explicit Journey id");
+    if let Some(ctx) = resolve_context_from_worktree_index(home, cwd)? {
+        return Ok(ctx);
+    }
+
+    bail!("not inside a Journey folder or attached worktree; pass an explicit Journey id");
 }
 
-pub fn create_journey(home: &Path, title: &str, now: &str) -> Result<JourneyContext> {
+pub fn create_journey(
+    home: &Path,
+    title: &str,
+    description: Option<String>,
+    now: &str,
+) -> Result<JourneyContext> {
     ensure_home(home)?;
 
     let mut index = load_index(home)?;
@@ -112,6 +138,7 @@ pub fn create_journey(home: &Path, title: &str, now: &str) -> Result<JourneyCont
     let journey = JourneyFile {
         id: id.clone(),
         title: title.to_string(),
+        description: description.clone(),
         status: JourneyStatus::Active,
         created: now.to_string(),
         repos: Vec::new(),
@@ -127,6 +154,7 @@ pub fn create_journey(home: &Path, title: &str, now: &str) -> Result<JourneyCont
     index.journeys.push(IndexEntry {
         id,
         title: title.to_string(),
+        description,
         status: JourneyStatus::Active,
         updated: now.to_string(),
         repos: Vec::new(),
@@ -150,6 +178,7 @@ pub fn update_index_entry(home: &Path, journey: &JourneyFile, now: &str) -> Resu
         .find(|entry| entry.id == journey.id)
     {
         entry.title = journey.title.clone();
+        entry.description = journey.description.clone();
         entry.status = journey.status;
         entry.updated = now.to_string();
         entry.repos = repos;
@@ -157,6 +186,7 @@ pub fn update_index_entry(home: &Path, journey: &JourneyFile, now: &str) -> Resu
         index.journeys.push(IndexEntry {
             id: journey.id.clone(),
             title: journey.title.clone(),
+            description: journey.description.clone(),
             status: journey.status,
             updated: now.to_string(),
             repos,
@@ -188,9 +218,226 @@ pub fn sync_worktree_link(journey_path: &Path, repo: &RepoRef) -> Result<()> {
     create_symlink(&repo.worktree, &link)
 }
 
+pub fn remove_worktree_link(journey_path: &Path, repo_name: &str) -> Result<()> {
+    let link = journey_path.join(WORKTREES_DIR).join(repo_name);
+    match fs::symlink_metadata(&link) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            fs::remove_file(&link)
+                .with_context(|| format!("failed to remove {}", link.display()))?;
+        }
+        Ok(_) => {
+            bail!(
+                "cannot remove worktree link {}; path exists and is not a symlink",
+                link.display()
+            );
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to inspect {}", link.display()))
+        }
+    }
+    Ok(())
+}
+
+pub fn attach_worktree(
+    home: &Path,
+    journey_id: &str,
+    repo_name: &str,
+    worktree: &Path,
+    attached_at: &str,
+) -> Result<PathBuf> {
+    let canonical_worktree = canonicalize_existing(worktree)?;
+    let mut index = load_worktree_index(home)?;
+
+    if let Some(existing) = index
+        .attachments
+        .iter()
+        .find(|attachment| attachment.worktree == canonical_worktree)
+    {
+        bail!(
+            "worktree {} is already attached to Journey `{}` as `{}`; unlink it first or use a different worktree",
+            canonical_worktree.display(),
+            existing.journey_id,
+            existing.repo_name
+        );
+    }
+
+    index.attachments.push(WorktreeAttachment {
+        worktree: canonical_worktree.clone(),
+        journey_id: journey_id.to_string(),
+        repo_name: repo_name.to_string(),
+        attached_at: attached_at.to_string(),
+    });
+    sort_worktree_index(&mut index);
+    save_worktree_index(home, &index)?;
+    Ok(canonical_worktree)
+}
+
+pub fn detach_worktree(home: &Path, journey_id: &str, repo_name: &str) -> Result<bool> {
+    let mut index = load_worktree_index(home)?;
+    let before = index.attachments.len();
+    index.attachments.retain(|attachment| {
+        !(attachment.journey_id == journey_id && attachment.repo_name == repo_name)
+    });
+    let removed = before != index.attachments.len();
+    if removed {
+        save_worktree_index(home, &index)?;
+    }
+    Ok(removed)
+}
+
+pub fn detach_journey_worktrees(home: &Path, journey_id: &str) -> Result<usize> {
+    let mut index = load_worktree_index(home)?;
+    let before = index.attachments.len();
+    index
+        .attachments
+        .retain(|attachment| attachment.journey_id != journey_id);
+    let removed = before - index.attachments.len();
+    if removed > 0 {
+        save_worktree_index(home, &index)?;
+    }
+    Ok(removed)
+}
+
+pub fn attach_journey_worktrees(
+    home: &Path,
+    journey: &JourneyFile,
+    attached_at: &str,
+) -> Result<usize> {
+    let mut index = load_worktree_index(home)?;
+    let mut added = 0;
+
+    for repo in &journey.repos {
+        let canonical_worktree = canonicalize_existing(&repo.worktree)?;
+        if let Some(existing) = index
+            .attachments
+            .iter()
+            .find(|attachment| attachment.worktree == canonical_worktree)
+        {
+            if existing.journey_id == journey.id && existing.repo_name == repo.name {
+                continue;
+            }
+            bail!(
+                "worktree {} is already attached to Journey `{}` as `{}`; unlink it first or use a different worktree",
+                canonical_worktree.display(),
+                existing.journey_id,
+                existing.repo_name
+            );
+        }
+
+        index.attachments.push(WorktreeAttachment {
+            worktree: canonical_worktree,
+            journey_id: journey.id.clone(),
+            repo_name: repo.name.clone(),
+            attached_at: attached_at.to_string(),
+        });
+        added += 1;
+    }
+
+    if added > 0 {
+        sort_worktree_index(&mut index);
+        save_worktree_index(home, &index)?;
+    }
+    Ok(added)
+}
+
+pub fn rebuild_worktree_index(home: &Path, attached_at: &str) -> Result<WorktreeIndex> {
+    ensure_home(home)?;
+    let index = load_index(home)?;
+    let mut worktree_index = WorktreeIndex::default();
+
+    for entry in index
+        .journeys
+        .iter()
+        .filter(|entry| matches!(entry.status, JourneyStatus::Active | JourneyStatus::Paused))
+    {
+        let journey_path = journey_dir(home, &entry.id);
+        if !journey_path.join(JOURNEY_FILE).exists() {
+            continue;
+        }
+        let journey = load_journey(&journey_path)?;
+        for repo in &journey.repos {
+            let canonical_worktree = match canonicalize_existing(&repo.worktree) {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            if let Some(existing) = worktree_index
+                .attachments
+                .iter()
+                .find(|attachment| attachment.worktree == canonical_worktree)
+            {
+                bail!(
+                    "cannot rebuild worktree index: {} is linked by Journey `{}` as `{}` and Journey `{}` as `{}`",
+                    canonical_worktree.display(),
+                    existing.journey_id,
+                    existing.repo_name,
+                    journey.id,
+                    repo.name
+                );
+            }
+            worktree_index.attachments.push(WorktreeAttachment {
+                worktree: canonical_worktree,
+                journey_id: journey.id.clone(),
+                repo_name: repo.name.clone(),
+                attached_at: attached_at.to_string(),
+            });
+        }
+    }
+
+    sort_worktree_index(&mut worktree_index);
+    save_worktree_index(home, &worktree_index)?;
+    Ok(worktree_index)
+}
+
 pub fn doc_path(journey_path: &Path, name: &str) -> Result<PathBuf> {
     let name = normalize_doc_name(name)?;
     Ok(journey_path.join(DOCS_DIR).join(name))
+}
+
+fn resolve_context_from_worktree_index(home: &Path, cwd: &Path) -> Result<Option<JourneyContext>> {
+    let Ok(canonical_cwd) = canonicalize_existing(cwd) else {
+        return Ok(None);
+    };
+    let index = load_worktree_index(home)?;
+    let mut matches = index
+        .attachments
+        .iter()
+        .filter(|attachment| canonical_cwd.starts_with(&attachment.worktree))
+        .collect::<Vec<_>>();
+    matches.sort_by(|a, b| {
+        b.worktree
+            .components()
+            .count()
+            .cmp(&a.worktree.components().count())
+    });
+
+    for attachment in matches {
+        let path = journey_dir(home, &attachment.journey_id);
+        if path.join(JOURNEY_FILE).exists() {
+            let journey = load_journey(&path)?;
+            return Ok(Some(JourneyContext {
+                home: home.to_path_buf(),
+                path,
+                journey,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn canonicalize_existing(path: &Path) -> Result<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", path.display()))
+}
+
+fn sort_worktree_index(index: &mut WorktreeIndex) {
+    index.attachments.sort_by(|a, b| {
+        a.worktree
+            .cmp(&b.worktree)
+            .then_with(|| a.journey_id.cmp(&b.journey_id))
+            .then_with(|| a.repo_name.cmp(&b.repo_name))
+    });
 }
 
 pub fn normalize_doc_name(name: &str) -> Result<String> {

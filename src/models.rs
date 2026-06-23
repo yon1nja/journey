@@ -51,16 +51,34 @@ pub struct Index {
 pub struct IndexEntry {
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub status: JourneyStatus,
     pub updated: String,
     #[serde(default)]
     pub repos: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorktreeIndex {
+    #[serde(default)]
+    pub attachments: Vec<WorktreeAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeAttachment {
+    pub worktree: PathBuf,
+    pub journey_id: String,
+    pub repo_name: String,
+    pub attached_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JourneyFile {
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub status: JourneyStatus,
     pub created: String,
     #[serde(default)]
@@ -93,64 +111,15 @@ pub enum EventKind {
         worktree: PathBuf,
         branch: String,
     },
-    Note {
-        text: String,
-    },
-    Decision {
-        did: String,
-        text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        because: Option<String>,
-    },
-    QuestionOpen {
-        qid: String,
-        text: String,
-    },
-    QuestionResolve {
-        qid: String,
-        answer: String,
-    },
-    NextActions {
-        items: Vec<String>,
-    },
-    Command {
-        cmd: String,
-        exit: i32,
-        cwd: PathBuf,
-    },
-    Checkpoint {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        message: Option<String>,
-        repos: Vec<CheckpointRepo>,
+    UnlinkRepo {
+        name: String,
+        root: PathBuf,
+        worktree: PathBuf,
+        branch: String,
     },
     StatusChange {
         status: JourneyStatus,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CheckpointRepo {
-    pub name: String,
-    pub head: String,
-    pub branch: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub upstream: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
-    pub tracked_dirty: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dirty_snapshot_ref: Option<String>,
-    #[serde(default)]
-    pub untracked_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitState {
-    pub head: String,
-    pub branch: String,
-    pub upstream: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
-    pub tracked_dirty: bool,
-    pub untracked_files: Vec<String>,
+    #[serde(other)]
+    Legacy,
 }

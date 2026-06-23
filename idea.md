@@ -1,165 +1,124 @@
 Journey
 
-Journey is a context persistence system for AI-assisted engineering.
+Journey is a local context container for AI-assisted engineering.
 
-It provides a durable workspace for a single engineering effort, allowing developers and AI agents to maintain context across interruptions, priority changes, multiple repositories, and long-running work.
-
-Unlike task managers, Journey does not focus on tracking work items.
-
-Unlike note-taking tools, Journey does not focus on knowledge management.
-
-Journey focuses on preserving and restoring working context.
-
-⸻
+It gives a single engineering effort a durable home on disk: metadata, a short description, linked live worktrees, effort-local docs, scratch files, and lifecycle status. It does not try to be a task manager, decision tracker, question tracker, note-taking system, generated handoff document, or internal version manager.
 
 Core Concept
 
-A Journey represents a single engineering effort:
+A Journey represents one engineering effort:
 
-Examples:
+* Investigate production authentication failures
+* Design EDL package publishing
+* Implement new editor architecture
+* Review PR-1234
+* Migrate a service to a new API
 
-Investigate production authentication failures
-Design EDL package publishing
-Implement new editor architecture
-Review PR-1234
-Migrate service to a new API
+Each Journey can contain or reference what is needed to return to that effort:
 
-Each Journey owns everything required to continue that effort later:
+* Journey metadata: id, title, optional description, status, creation time
+* Linked live worktrees across one or more git repositories
+* Draft docs and specs under the Journey folder
+* Scratch notes or custom folders created by the user
+* Lifecycle status: active, paused, archived, abandoned
 
-Notes
-Decisions
-Questions
-Draft docs and specs
-Worktree links
-Repository state
-Current progress
-Next actions
+The goal is that after hours, days, or weeks away from a problem, a developer can find the effort, inspect its folder and linked worktrees, and continue using their own workflow.
 
-The goal is that after hours, days, or weeks away from a problem, a developer can return and immediately resume productive work.
+Primary Experience
 
-⸻
+Running `journey` with no subcommand starts the full-screen terminal starter from the current folder. It uses the same pane-and-preview visual language as `journey list`: steps on the left, current context and draft metadata on the right, colored labels, and prompts at the bottom.
+
+The starter:
+
+* detects the current folder
+* detects the current git repo and branch when available
+* asks for a Journey title
+* asks for an optional short description explaining why the effort exists
+* creates the Journey folder and metadata
+* if inside a git repo, offers to attach the current worktree, create one new worktree, create multiple new worktrees, or skip worktree attachment
+
+For automation and agents, `journey new <title> --description <text>` creates the same Journey metadata without opening the interactive starter.
+
+Discovery Experience
+
+`journey list` is interactive by default and uses the real `fzf` binary. It shows Journey names on the left and a preview pane on the right with the Journey id, description, status, path, linked repos, and docs. The default query is `active`, so active Journeys are shown first; clearing the query reveals all Journeys.
+
+Pressing Enter opens an action popup inside fzf. Current actions include resume, status, open shell in the Journey folder, print path, pause, archive, and abandon.
+
+Agents and scripts should use `journey list --non-interactive`, which prints table output and treats `--status` as a hard filter.
 
 Philosophy
 
-Engineering work is frequently interrupted.
+Journey is intentionally minimalist and local.
 
-Developers:
+It should answer:
 
-* switch priorities
-* work across multiple repositories
-* spawn multiple AI conversations
-* investigate issues over several days
-* revisit architectural decisions months later
+* What effort is this?
+* Why was this effort opened?
+* Is it active, paused, archived, or abandoned?
+* Where is its folder?
+* Which worktrees belong to it?
+* What docs or scratch files live with it?
 
-Most tools preserve artifacts:
-
-Git preserves code
-Jira preserves tickets
-Slack preserves conversations
-
-But very few tools preserve:
-
-“What exactly was I doing and what should I do next?”
-
-Journey exists to preserve that context.
-
-⸻
-
-Relationship with AI Agents
-
-Journey does not manage AI agents.
-
-Instead, Journey provides a structured environment that AI agents can operate within.
-
-A companion Journey Skill instructs agents to:
-
-* understand the current Journey
-* maintain context documents
-* record decisions
-* track discoveries
-* update next actions
-* prepare handoffs
-
-The Journey stores state.
-
-The AI agent maintains it.
-
-⸻
+Journey should not decide how the user records thoughts, plans, decisions, questions, or next actions. Those belong in user-owned files, using whatever workflow makes sense for the effort.
 
 Structure
 
-A Journey contains:
-
-Journey
-├── Metadata
-├── Generated Context
-├── Journey Docs
-└── Worktree Links
-
 Example:
 
-error-investigation/
-├── journey.yaml
-├── journal.jsonl
-├── NOW.md
-├── docs/
-│   ├── investigation.md
-│   └── migration-plan.md
-└── worktrees/
-    ├── frontend -> /actual/path/to/frontend-worktree
-    └── backend -> /actual/path/to/backend-worktree
+```text
+~/.journey/
+|-- index.yaml
+|-- worktree-index.yaml
+`-- journeys/
+    `-- error-investigation/
+        |-- journey.yaml
+        |-- journal.jsonl
+        |-- docs/
+        |   |-- investigation.md
+        |   `-- migration-plan.md
+        `-- worktrees/
+            |-- frontend -> /actual/path/to/frontend-worktree
+            `-- backend -> /actual/path/to/backend-worktree
+```
 
-A Journey may reference live worktrees from multiple repositories when solving a problem requires changes across system boundaries. The `worktrees/` directory is a generated convenience index of symlinks; Journey does not own the checkouts.
+`journey.yaml`, `index.yaml`, and `worktree-index.yaml` are the structured configuration and index layer.
 
-A Journey also owns effort-local docs and specs. These are human-authored working files that do not belong at a repository root until the developer intentionally decides to publish or commit them somewhere.
+`docs/` and any other user-created folders are human-owned. Journey does not generate `NOW.md`, capture code snapshots, or prescribe a documentation model.
 
-⸻
+Worktrees
+
+Journey references live git worktrees; it does not own them. The `worktrees/` folder inside a Journey is a convenience view of symlinks.
+
+`worktree-index.yaml` maps canonical worktree paths to the one active or paused Journey that currently owns them for context resolution. That means commands such as `journey doc list` can be run from inside an attached worktree without passing `--journey`.
+
+Archived and abandoned Journeys release worktree ownership so those checkouts can be linked elsewhere. Paused Journeys keep ownership because they are still resumable context.
 
 Design Principles
 
-1. Context is the primary artifact
+1. Context is the primary artifact.
+2. Work is organized around efforts, not tickets or repos.
+3. Journey owns the container, not the workflow.
+4. Worktrees are referenced, not owned.
+5. Each active or paused worktree belongs to at most one Journey.
+6. Lifecycle commands change status only.
+7. Git remains responsible for version control.
+8. Everything is local files; no server is required.
 
-Journey optimizes for preserving context, not managing tasks.
+Non-goals
 
-2. Work is organized around efforts
+Journey intentionally does not provide:
 
-A Journey represents a work effort rather than a ticket, branch, or repository.
-
-3. AI-first
-
-Journey assumes AI agents are active participants in the workflow and should be able to maintain context automatically.
-
-4. Minimal and local
-
-Journey stores its state as files and folders.
-
-No server is required.
-
-No external service is required.
-
-The initial implementation is a Rust CLI that stores local files and shells out to git for repository state.
-
-5. Recoverability
-
-A Journey should always answer:
-
-What is this?
-What has been learned?
-What decisions were made?
-What remains unresolved?
-What should happen next?
-
-⸻
+* checkpoints
+* code snapshots
+* code restore/apply
+* generated `NOW.md`
+* `ask`, `decide`, `resolve`, `next`, or structured note commands
+* task management
+* agent orchestration
+* multi-machine sync
+* a web UI or daemon
 
 Vision
 
-The long-term vision of Journey is to become the missing layer between:
-
-Git
-AI Agents
-Terminal Workflows
-Engineering Knowledge
-
-allowing developers to pause and resume complex engineering efforts with minimal loss of context.
-
-In a world where engineers increasingly collaborate with AI agents, Journey serves as the persistent memory of the work itself.
+Journey should become the small missing layer between terminal workflows, AI agents, and effort-local working files. It should make complex work easy to pause and resume without requiring every user to adopt the same documentation discipline.

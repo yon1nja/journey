@@ -48,7 +48,7 @@ pub fn read_events(journey_path: &Path) -> Result<Vec<EventRecord>> {
 }
 
 pub fn append_event(journey_path: &Path, kind: EventKind) -> Result<EventRecord> {
-    let mut events = read_events(journey_path)?;
+    let events = read_events(journey_path)?;
     let seq = events.iter().map(|event| event.seq).max().unwrap_or(0) + 1;
     let record = EventRecord {
         seq,
@@ -65,34 +65,5 @@ pub fn append_event(journey_path: &Path, kind: EventKind) -> Result<EventRecord>
         .open(&path)
         .with_context(|| format!("failed to open journal {}", path.display()))?;
     writeln!(file, "{line}")?;
-    events.push(record.clone());
     Ok(record)
-}
-
-pub fn next_decision_id(events: &[EventRecord]) -> String {
-    next_prefixed_id(events, "d", |kind| match kind {
-        EventKind::Decision { did, .. } => Some(did.as_str()),
-        _ => None,
-    })
-}
-
-pub fn next_question_id(events: &[EventRecord]) -> String {
-    next_prefixed_id(events, "q", |kind| match kind {
-        EventKind::QuestionOpen { qid, .. } => Some(qid.as_str()),
-        _ => None,
-    })
-}
-
-fn next_prefixed_id<F>(events: &[EventRecord], prefix: &str, extract: F) -> String
-where
-    F: Fn(&EventKind) -> Option<&str>,
-{
-    let max = events
-        .iter()
-        .filter_map(|event| extract(&event.kind))
-        .filter_map(|id| id.strip_prefix(prefix))
-        .filter_map(|suffix| suffix.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0);
-    format!("{prefix}{}", max + 1)
 }

@@ -3,7 +3,7 @@ mod cli;
 mod events;
 mod git;
 mod models;
-mod projection;
+mod picker;
 mod storage;
 
 pub use app::run;
