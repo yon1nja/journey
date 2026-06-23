@@ -51,13 +51,6 @@ pub enum Commands {
     },
     #[command(name = "__fzf-preview", hide = true)]
     FzfPreview { id: String },
-    #[command(name = "__fzf-action-menu", hide = true)]
-    FzfActionMenu { id: String },
-    #[command(name = "__fzf-new-journey", hide = true)]
-    FzfNewJourney {
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-    },
     #[command(name = "__fzf-action-items", hide = true)]
     FzfActionItems { id: String },
     #[command(name = "__fzf-dispatch", hide = true)]

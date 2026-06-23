@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -40,14 +39,6 @@ pub fn run(cli: Cli) -> Result<String> {
         ),
         Some(Commands::FzfCandidates { query }) => fzf_candidates(&home, query.as_deref()),
         Some(Commands::FzfPreview { id }) => picker::preview_for_id(&home, &id),
-        Some(Commands::FzfActionMenu { id }) => {
-            fzf_action_menu(&home, &cwd, &id)?;
-            Ok(String::new())
-        }
-        Some(Commands::FzfNewJourney { cwd: override_cwd }) => {
-            let effective_cwd = override_cwd.unwrap_or_else(|| cwd.clone());
-            fzf_new_journey(&home, &effective_cwd)
-        }
         Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
         Some(Commands::Doctor { repair }) => doctor(&home, repair),
@@ -141,150 +132,6 @@ fn fzf_candidates(home: &Path, query: Option<&str>) -> Result<String> {
     let mut rows = index.journeys.into_iter().collect::<Vec<_>>();
     rows.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
     Ok(picker::candidate_lines(&rows, query))
-}
-
-fn fzf_action_menu(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
-    let Some(action) = picker::pick_journey_action(journey_id)? else {
-        return Ok(());
-    };
-
-    match action.as_str() {
-        "resume" => notify_action(resume(home, cwd, Some(journey_id))?),
-        "link" => notify_action(link_repo(home, cwd, Some(journey_id), cwd, None)?),
-        "worktree" => create_and_link_worktree(home, cwd, journey_id),
-        "unlink" => pick_and_unlink_repo(home, cwd, journey_id),
-        "status" => notify_action(status(home, cwd, Some(journey_id))?),
-        "shell" => open_shell_in_journey(home, journey_id),
-        "path" => notify_action(storage::journey_dir(home, journey_id).display().to_string()),
-        "pause" => notify_action(set_status(
-            home,
-            cwd,
-            Some(journey_id),
-            JourneyStatus::Paused,
-        )?),
-        "archive" => notify_action(set_status(
-            home,
-            cwd,
-            Some(journey_id),
-            JourneyStatus::Archived,
-        )?),
-        "abandon" => notify_action(set_status(
-            home,
-            cwd,
-            Some(journey_id),
-            JourneyStatus::Abandoned,
-        )?),
-        _ => bail!("unknown fzf action: {action}"),
-    }
-}
-
-fn fzf_new_journey(home: &Path, cwd: &Path) -> Result<String> {
-    let Some(input) = picker::run_new_journey(cwd)? else {
-        return Ok(String::new());
-    };
-
-    let now = events::now_rfc3339()?;
-    let ctx = storage::create_journey(home, &input.title, input.description, &now)?;
-
-    let mut messages = vec![format!(
-        "created Journey `{}` at {}",
-        ctx.journey.id,
-        ctx.path.display()
-    )];
-
-    if let Some(action) = input.worktree_action {
-        match action {
-            picker::WorktreeAction::Attach => {
-                let repo_name = cwd
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "repo".to_string());
-                let linked = link_repo(home, cwd, Some(&ctx.journey.id), cwd, Some(repo_name))?;
-                messages.push(linked);
-            }
-            picker::WorktreeAction::Create { path, branch } => {
-                let discovered = git::discover_repo(cwd)?;
-                git::create_worktree(&discovered.root, &path, &branch, true)?;
-                messages.push(format!(
-                    "created git worktree {} on branch `{}`",
-                    path.display(),
-                    branch
-                ));
-                let repo_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "worktree".to_string());
-                let linked = link_repo(home, cwd, Some(&ctx.journey.id), &path, Some(repo_name))?;
-                messages.push(linked);
-            }
-            picker::WorktreeAction::Skip => {}
-        }
-    }
-
-    picker::fzf_notify(&messages.join("\n"))?;
-    Ok(String::new())
-}
-
-fn notify_action(output: String) -> Result<()> {
-    if !output.is_empty() {
-        picker::fzf_notify(&output)?;
-    }
-    Ok(())
-}
-
-fn pick_and_unlink_repo(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
-    let ctx = storage::resolve_context(home, Some(journey_id), cwd)?;
-    if ctx.journey.repos.is_empty() {
-        return notify_action("no repos linked to this journey".to_string());
-    }
-
-    let Some(repo_name) = picker::pick_repo_to_unlink(journey_id, &ctx.journey.repos)? else {
-        return Ok(());
-    };
-
-    notify_action(unlink_repo(home, cwd, Some(journey_id), &repo_name)?)
-}
-
-fn create_and_link_worktree(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
-    let discovered = git::discover_repo(cwd)?;
-    let Some(input) = picker::pick_new_worktree(journey_id, &discovered.root)? else {
-        return Ok(());
-    };
-
-    git::create_worktree(&discovered.root, &input.path, &input.branch, true)?;
-
-    let repo_name = input
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "worktree".to_string());
-    let linked = link_repo(home, cwd, Some(journey_id), &input.path, Some(repo_name))?;
-
-    let msg = format!(
-        "created worktree {} on branch `{}`\n{}",
-        input.path.display(),
-        input.branch,
-        linked
-    );
-    notify_action(msg)
-}
-
-fn open_shell_in_journey(home: &Path, journey_id: &str) -> Result<()> {
-    let dir = storage::journey_dir(home, journey_id);
-    if !dir.exists() {
-        bail!("Journey folder does not exist: {}", dir.display());
-    }
-
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let status = Command::new(&shell)
-        .current_dir(&dir)
-        .status()
-        .with_context(|| format!("failed to open shell `{shell}` in {}", dir.display()))?;
-
-    if !status.success() {
-        bail!("shell exited with status {status}");
-    }
-    Ok(())
 }
 
 fn status(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> {
@@ -999,4 +846,16 @@ fn validate_name(name: &str) -> Result<String> {
         bail!("name must not contain path separators");
     }
     Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fzf_action_items_format() {
+        let output = fzf_action_items("test-journey").unwrap();
+        assert!(output.starts_with("act:test-journey:shell\t"));
+        assert!(output.contains("act:test-journey:worktree\t"));
+    }
 }
