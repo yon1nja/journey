@@ -23,7 +23,7 @@ pub struct NewJourneyInput {
     pub worktree_action: Option<WorktreeAction>,
 }
 
-pub fn run_journey_list(default_filter: JourneyStatus, rows: &[IndexEntry]) -> Result<()> {
+pub fn run_journey_list(default_filter: JourneyStatus, rows: &[IndexEntry], cwd: &Path) -> Result<()> {
     ensure_fzf()?;
 
     let default_query = default_filter.to_string();
@@ -36,6 +36,22 @@ pub fn run_journey_list(default_filter: JourneyStatus, rows: &[IndexEntry]) -> R
     let refresh_bind = format!("ctrl-r:reload({reload_command})");
     let change_bind = format!("change:reload({reload_command})");
 
+    let git_hint = crate::git::discover_repo(cwd)
+        .ok()
+        .map(|repo| {
+            let name = repo
+                .root
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "repo".to_string());
+            format!(" (git: {name}, {})", repo.branch)
+        })
+        .unwrap_or_default();
+
+    let cwd_str = shell_quote(cwd);
+    let new_journey_command = format!("{exe} __fzf-new-journey --cwd={cwd_str}");
+    let new_bind = format!("ctrl-n:execute({new_journey_command})+reload({reload_command})");
+
     let mut child = Command::new("fzf")
         .arg("--ansi")
         .arg("--disabled")
@@ -44,10 +60,10 @@ pub fn run_journey_list(default_filter: JourneyStatus, rows: &[IndexEntry]) -> R
         .arg("--border")
         .arg("--layout=reverse")
         .arg("--height=100%")
-        .arg("--prompt=Journeys> ")
+        .arg(format!("--prompt=Journeys [{default_filter}]> "))
         .arg(format!("--query={default_query}"))
         .arg(format!(
-            "--header=Journey list | default filter: {default_filter} | clear query for all | enter: actions | ctrl-r: reload"
+            "--header=Journey list | enter: actions | ctrl-n: new journey{git_hint} | ctrl-r: reload"
         ))
         .arg(format!("--delimiter={}", "\t"))
         .arg("--with-nth=2..")
@@ -56,6 +72,7 @@ pub fn run_journey_list(default_filter: JourneyStatus, rows: &[IndexEntry]) -> R
         .arg(format!("--bind={enter_bind}"))
         .arg(format!("--bind={refresh_bind}"))
         .arg(format!("--bind={change_bind}"))
+        .arg(format!("--bind={new_bind}"))
         .stdin(Stdio::piped())
         .spawn()
         .context("failed to start fzf")?;

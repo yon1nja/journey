@@ -5,11 +5,16 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn journey(home: &Path, args: &[&str]) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_journey"))
-        .env("JOURNEY_HOME", home)
-        .args(args)
-        .output()
-        .expect("failed to run journey");
+    journey_in(home, None, args)
+}
+
+fn journey_in(home: &Path, cwd: Option<&Path>, args: &[&str]) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_journey"));
+    command.env("JOURNEY_HOME", home).args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command.output().expect("failed to run journey");
 
     assert!(
         output.status.success(),
@@ -20,6 +25,24 @@ fn journey(home: &Path, args: &[&str]) -> String {
     );
 
     String::from_utf8(output.stdout).expect("stdout was not UTF-8")
+}
+
+fn journey_fails(home: &Path, args: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_journey"))
+        .env("JOURNEY_HOME", home)
+        .args(args)
+        .output()
+        .expect("failed to run journey");
+
+    assert!(
+        !output.status.success(),
+        "journey {:?} unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stderr).expect("stderr was not UTF-8")
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {
@@ -52,7 +75,7 @@ fn init_repo(root: &Path) {
 }
 
 #[test]
-fn full_cli_flow_records_dirty_snapshot_without_stash_stack() {
+fn full_cli_flow_links_docs_and_worktrees_without_generated_state() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
     let repo = temp.path().join("repo");
@@ -83,36 +106,23 @@ fn full_cli_flow_records_dirty_snapshot_without_stash_stack() {
     fs::write(repo.join("scratch.log"), "scratch\n").unwrap();
     assert!(git(&repo, &["stash", "list"]).trim().is_empty());
 
-    let checkpoint = journey(
-        &home,
-        &[
-            "checkpoint",
-            "--journey",
-            "test-journey",
-            "-m",
-            "dirty checkpoint",
-        ],
-    );
-    assert!(checkpoint.contains("1 dirty"));
-    assert!(checkpoint.contains("1 untracked files"));
+    let error = journey_fails(&home, &["checkpoint", "--journey", "test-journey"]);
+    assert!(error.contains("unrecognized subcommand 'checkpoint'"));
     assert!(git(&repo, &["stash", "list"]).trim().is_empty());
 
     let journal = fs::read_to_string(home.join("journeys/test-journey/journal.jsonl")).unwrap();
-    assert!(journal.contains("\"dirty_snapshot_ref\""));
-    assert!(journal.contains("scratch.log"));
+    assert!(journal.contains("\"type\":\"link_repo\""));
+    assert!(!journal.contains("dirty_snapshot_ref"));
+    assert!(!journal.contains("scratch.log"));
 
     let resumed = journey(&home, &["resume", "test-journey"]);
-    assert!(resumed.contains("dirty snapshot stat"));
-    assert!(resumed.contains("1 untracked files were recorded"));
+    assert!(resumed.contains("Journey `test-journey` is now active"));
 
-    let now = fs::read_to_string(home.join("journeys/test-journey/NOW.md")).unwrap();
-    assert!(now.contains("GENERATED - do not edit"));
-    assert!(now.contains("docs/design.md"));
-    assert!(now.contains("scratch.log"));
+    assert!(!home.join("journeys/test-journey/NOW.md").exists());
 }
 
 #[test]
-fn context_commands_work_inside_journey_folder() {
+fn removed_structured_context_commands_are_not_available() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
     journey(&home, &["new", "Context", "Test"]);
@@ -126,12 +136,225 @@ fn context_commands_work_inside_journey_folder() {
         .expect("failed to run journey");
 
     assert!(
-        output.status.success(),
-        "journey note failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "journey note unexpectedly succeeded\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
     );
 
-    let now = fs::read_to_string(journey_dir.join("NOW.md")).unwrap();
-    assert!(now.contains("Context Test"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unrecognized subcommand 'note'"));
+    assert!(!journey_dir.join("NOW.md").exists());
+}
+
+#[test]
+fn list_non_interactive_keeps_table_output() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "List", "One"]);
+    journey(&home, &["new", "List", "Two"]);
+
+    let listed = journey(&home, &["list", "--non-interactive"]);
+
+    assert!(listed.contains("list-one\tactive\t"));
+    assert!(listed.contains("list-two\tactive\t"));
+    assert!(listed.contains("no repos"));
+}
+
+#[test]
+fn bare_journey_shows_non_interactive_list_when_piped() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Piped", "Test"]);
+
+    let output = journey(&home, &[]);
+    assert!(output.contains("piped-test"));
+}
+
+#[test]
+fn journey_description_is_stored_and_rendered() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(
+        &home,
+        &[
+            "new",
+            "Described",
+            "Journey",
+            "--description",
+            "Why this effort exists",
+        ],
+    );
+
+    let status = journey(&home, &["status", "described-journey"]);
+    assert!(status.contains("description: Why this effort exists"));
+
+    let preview = journey(&home, &["__fzf-preview", "described-journey"]);
+    assert!(preview.contains("description:"));
+    assert!(preview.contains("Why this effort exists"));
+
+    let journey_yaml =
+        fs::read_to_string(home.join("journeys/described-journey/journey.yaml")).unwrap();
+    assert!(journey_yaml.contains("description: Why this effort exists"));
+}
+
+#[test]
+fn resume_and_pause_are_lifecycle_status_changes() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Lifecycle", "Only"]);
+
+    let paused = journey(&home, &["pause", "lifecycle-only"]);
+    assert!(paused.contains("Journey `lifecycle-only` is now paused"));
+
+    let status = journey(&home, &["status", "lifecycle-only"]);
+    assert!(status.contains("status: paused"));
+
+    let resumed = journey(&home, &["resume", "lifecycle-only"]);
+    assert!(resumed.contains("Journey `lifecycle-only` is now active"));
+
+    let status = journey(&home, &["status", "lifecycle-only"]);
+    assert!(status.contains("status: active"));
+    assert!(!status.contains("checkpoint"));
+}
+
+#[test]
+fn fzf_helpers_render_candidates_and_preview() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Fzf", "Helper"]);
+    journey(&home, &["new", "Paused", "Helper"]);
+    journey(&home, &["pause", "paused-helper"]);
+    journey(&home, &["doc", "new", "popup", "--journey", "fzf-helper"]);
+
+    let candidates = journey(&home, &["__fzf-candidates", "--query", "active"]);
+    assert!(candidates.contains("fzf-helper\tFzf Helper"));
+    assert!(!candidates.contains("paused-helper\tPaused Helper"));
+
+    let all_candidates = journey(&home, &["__fzf-candidates", "--query", ""]);
+    assert!(all_candidates.contains("fzf-helper\tFzf Helper"));
+    assert!(all_candidates.contains("paused-helper\tPaused Helper"));
+
+    let preview = journey(&home, &["__fzf-preview", "fzf-helper"]);
+    assert!(preview.contains("Fzf Helper"));
+    assert!(preview.contains("fzf-helper"));
+    assert!(preview.contains("docs/popup.md"));
+    assert!(!preview.contains("next actions"));
+    assert!(!preview.contains("checkpoint"));
+}
+
+#[test]
+fn context_resolves_from_inside_attached_worktree() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+
+    journey(&home, &["new", "Repo", "Context"]);
+    journey(
+        &home,
+        &["link", repo.to_str().unwrap(), "--journey", "repo-context"],
+    );
+    fs::create_dir_all(repo.join("src/nested")).unwrap();
+
+    let doc = journey_in(
+        &home,
+        Some(&repo.join("src/nested")),
+        &["doc", "new", "from-repo"],
+    );
+    assert!(doc.contains("repo-context/docs/from-repo.md"));
+
+    let listed = journey_in(&home, Some(&repo), &["doc", "list"]);
+    assert!(listed.contains("from-repo.md"));
+}
+
+#[test]
+fn linked_worktree_can_only_belong_to_one_active_journey() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+
+    journey(&home, &["new", "First", "Journey"]);
+    journey(&home, &["new", "Second", "Journey"]);
+    journey(
+        &home,
+        &["link", repo.to_str().unwrap(), "--journey", "first-journey"],
+    );
+
+    let error = journey_fails(
+        &home,
+        &[
+            "link",
+            repo.to_str().unwrap(),
+            "--journey",
+            "second-journey",
+        ],
+    );
+    assert!(error.contains("already attached to Journey `first-journey`"));
+
+    let unlinked = journey(&home, &["unlink", "repo", "--journey", "first-journey"]);
+    assert!(unlinked.contains("unlinked `repo`"));
+
+    let linked = journey(
+        &home,
+        &[
+            "link",
+            repo.to_str().unwrap(),
+            "--journey",
+            "second-journey",
+        ],
+    );
+    assert!(linked.contains("Journey `second-journey`"));
+}
+
+#[test]
+fn archive_detaches_worktree_context() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+
+    journey(&home, &["new", "Archive", "Detach"]);
+    journey(
+        &home,
+        &[
+            "link",
+            repo.to_str().unwrap(),
+            "--journey",
+            "archive-detach",
+        ],
+    );
+
+    let archived = journey(&home, &["archive", "archive-detach"]);
+    assert!(archived.contains("detached 1 worktrees"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_journey"))
+        .env("JOURNEY_HOME", &home)
+        .current_dir(&repo)
+        .args(["doc", "list"])
+        .output()
+        .expect("failed to run journey");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("attached worktree"));
+}
+
+#[test]
+fn doctor_repair_rebuilds_worktree_index() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+
+    journey(&home, &["new", "Repair", "Index"]);
+    journey(
+        &home,
+        &["link", repo.to_str().unwrap(), "--journey", "repair-index"],
+    );
+    fs::remove_file(home.join("worktree-index.yaml")).unwrap();
+
+    let repaired = journey(&home, &["doctor", "--repair"]);
+    assert!(repaired.contains("rebuilt worktree index with 1 attachments"));
+
+    let listed = journey_in(&home, Some(&repo), &["doc", "list"]);
+    assert_eq!(listed.trim(), "no docs");
 }

@@ -19,7 +19,7 @@ pub fn run(cli: Cli) -> Result<String> {
     let cwd = env::current_dir().context("failed to read current directory")?;
 
     match cli.command {
-        None => start_journey_tui(&home, &cwd),
+        None => list_journeys(&home, &cwd, JourneyStatus::Active, false),
         Some(Commands::New(args)) => new_journey(&home, &join_words(&args.text), args.description),
         Some(Commands::Link {
             repo_path,
@@ -35,6 +35,7 @@ pub fn run(cli: Cli) -> Result<String> {
             non_interactive,
         }) => list_journeys(
             &home,
+            &cwd,
             status.unwrap_or(JourneyStatus::Active),
             non_interactive,
         ),
@@ -637,6 +638,7 @@ fn clean_optional(value: Option<String>) -> Option<String> {
 
 fn list_journeys(
     home: &Path,
+    cwd: &Path,
     default_filter: JourneyStatus,
     non_interactive: bool,
 ) -> Result<String> {
@@ -650,7 +652,7 @@ fn list_journeys(
     }
 
     if !non_interactive && io::stdout().is_terminal() {
-        picker::run_journey_list(default_filter, &rows)?;
+        picker::run_journey_list(default_filter, &rows, cwd)?;
         return Ok(String::new());
     }
 
