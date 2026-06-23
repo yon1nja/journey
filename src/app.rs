@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::Command;
 
@@ -73,7 +73,6 @@ fn new_journey(home: &Path, title: &str, description: Option<String>) -> Result<
     ))
 }
 
-
 fn clean_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
@@ -141,24 +140,24 @@ fn fzf_action_menu(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
     };
 
     match action.as_str() {
-        "resume" => print_action_output(resume(home, cwd, Some(journey_id))?),
-        "link" => print_action_output(link_repo(home, cwd, Some(journey_id), cwd, None)?),
-        "status" => print_action_output(status(home, cwd, Some(journey_id))?),
+        "resume" => notify_action(resume(home, cwd, Some(journey_id))?),
+        "link" => notify_action(link_repo(home, cwd, Some(journey_id), cwd, None)?),
+        "status" => notify_action(status(home, cwd, Some(journey_id))?),
         "shell" => open_shell_in_journey(home, journey_id),
-        "path" => print_action_output(storage::journey_dir(home, journey_id).display().to_string()),
-        "pause" => print_action_output(set_status(
+        "path" => notify_action(storage::journey_dir(home, journey_id).display().to_string()),
+        "pause" => notify_action(set_status(
             home,
             cwd,
             Some(journey_id),
             JourneyStatus::Paused,
         )?),
-        "archive" => print_action_output(set_status(
+        "archive" => notify_action(set_status(
             home,
             cwd,
             Some(journey_id),
             JourneyStatus::Archived,
         )?),
-        "abandon" => print_action_output(set_status(
+        "abandon" => notify_action(set_status(
             home,
             cwd,
             Some(journey_id),
@@ -204,33 +203,21 @@ fn fzf_new_journey(home: &Path, cwd: &Path) -> Result<String> {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "worktree".to_string());
-                let linked =
-                    link_repo(home, cwd, Some(&ctx.journey.id), &path, Some(repo_name))?;
+                let linked = link_repo(home, cwd, Some(&ctx.journey.id), &path, Some(repo_name))?;
                 messages.push(linked);
             }
             picker::WorktreeAction::Skip => {}
         }
     }
 
-    for msg in &messages {
-        println!("{msg}");
-    }
-    wait_for_enter()?;
+    picker::fzf_notify(&messages.join("\n"))?;
     Ok(String::new())
 }
 
-fn print_action_output(output: String) -> Result<()> {
+fn notify_action(output: String) -> Result<()> {
     if !output.is_empty() {
-        println!("{output}");
+        picker::fzf_notify(&output)?;
     }
-    wait_for_enter()
-}
-
-fn wait_for_enter() -> Result<()> {
-    print!("\nPress Enter to return to Journey list...");
-    io::stdout().flush()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
     Ok(())
 }
 

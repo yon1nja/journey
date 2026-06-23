@@ -23,7 +23,22 @@ pub struct NewJourneyInput {
     pub worktree_action: Option<WorktreeAction>,
 }
 
-pub fn run_journey_list(default_filter: JourneyStatus, rows: &[IndexEntry], cwd: &Path) -> Result<()> {
+const JOURNEY_ACTIONS: [(&str, &str); 8] = [
+    ("shell", "cd journey"),
+    ("resume", "Resume"),
+    ("link", "Link current worktree"),
+    ("status", "Status"),
+    ("path", "Print Journey path"),
+    ("pause", "Pause"),
+    ("archive", "Archive"),
+    ("abandon", "Abandon"),
+];
+
+pub fn run_journey_list(
+    default_filter: JourneyStatus,
+    rows: &[IndexEntry],
+    cwd: &Path,
+) -> Result<()> {
     ensure_fzf()?;
 
     let default_query = default_filter.to_string();
@@ -145,17 +160,7 @@ pub fn preview_for_id(home: &Path, id: &str) -> Result<String> {
 pub fn pick_journey_action(journey_id: &str) -> Result<Option<String>> {
     ensure_fzf()?;
 
-    let actions = [
-        ("resume", "Resume"),
-        ("link", "Link current worktree"),
-        ("status", "Status"),
-        ("shell", "Open shell in Journey folder"),
-        ("path", "Print Journey path"),
-        ("pause", "Pause"),
-        ("archive", "Archive"),
-        ("abandon", "Abandon"),
-    ];
-    let input = actions
+    let input = JOURNEY_ACTIONS
         .iter()
         .map(|(key, label)| format!("{key}\t{label}"))
         .collect::<Vec<_>>()
@@ -205,6 +210,36 @@ pub fn pick_journey_action(journey_id: &str) -> Result<Option<String>> {
     } else {
         bail!("fzf action menu exited with status {}", output.status);
     }
+}
+
+pub fn fzf_notify(message: &str) -> Result<()> {
+    ensure_fzf()?;
+
+    let mut child = Command::new("fzf")
+        .arg("--no-info")
+        .arg("--border=rounded")
+        .arg("--layout=reverse")
+        .arg("--height=20%")
+        .arg("--margin=5%,10%")
+        .arg("--padding=1")
+        .arg("--prompt=  ")
+        .arg(format!("--header={message}"))
+        .arg("--bind=enter:accept")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .context("failed to start fzf notification")?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("failed to open fzf stdin"))?;
+        stdin.write_all(b"OK")?;
+    }
+
+    let _ = child.wait()?;
+    Ok(())
 }
 
 pub fn fzf_prompt_text(prompt: &str, header: &str, required: bool) -> Result<Option<String>> {
@@ -509,4 +544,15 @@ fn sanitize_item(value: &str) -> String {
 fn shell_quote(path: &Path) -> String {
     let value = path.display().to_string();
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JOURNEY_ACTIONS;
+
+    #[test]
+    fn journey_action_menu_opens_shell_first() {
+        assert_eq!(JOURNEY_ACTIONS[0], ("shell", "cd journey"));
+        assert_eq!(JOURNEY_ACTIONS[1], ("resume", "Resume"));
+    }
 }
