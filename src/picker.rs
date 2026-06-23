@@ -23,10 +23,12 @@ pub struct NewJourneyInput {
     pub worktree_action: Option<WorktreeAction>,
 }
 
-const JOURNEY_ACTIONS: [(&str, &str); 8] = [
+const JOURNEY_ACTIONS: [(&str, &str); 10] = [
     ("shell", "cd journey"),
     ("resume", "Resume"),
+    ("worktree", "New branch + worktree"),
     ("link", "Link current worktree"),
+    ("unlink", "Unlink a repo"),
     ("status", "Status"),
     ("path", "Print Journey path"),
     ("pause", "Pause"),
@@ -356,15 +358,7 @@ pub fn fzf_pick_worktree_action(
     match action {
         "attach" => Ok(Some(WorktreeAction::Attach)),
         "create" => {
-            let repo_parent = repo_root.parent().unwrap_or(repo_root);
-            let default_path = repo_parent.join(format!(
-                "{}-{}",
-                repo_root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "repo".to_string()),
-                default_slug
-            ));
+            let default_path = repo_root.join(format!(".worktrees/{default_slug}"));
             let default_path_str = default_path.display().to_string();
 
             let path_str = fzf_prompt_text(
@@ -430,6 +424,110 @@ pub fn run_new_journey(cwd: &Path) -> Result<Option<NewJourneyInput>> {
         description,
         worktree_action,
     }))
+}
+
+pub fn pick_repo_to_unlink(
+    journey_id: &str,
+    repos: &[crate::models::RepoRef],
+) -> Result<Option<String>> {
+    ensure_fzf()?;
+
+    let input = repos
+        .iter()
+        .map(|r| format!("{}\t{}  ({})", r.name, r.name, r.worktree.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut child = Command::new("fzf")
+        .arg("--ansi")
+        .arg("--no-multi")
+        .arg("--cycle")
+        .arg("--border=rounded")
+        .arg("--layout=reverse")
+        .arg("--height=40%")
+        .arg("--margin=5%,10%")
+        .arg("--padding=1")
+        .arg("--prompt=Unlink> ")
+        .arg(format!(
+            "--header=Select repo to unlink from {journey_id} | esc: cancel"
+        ))
+        .arg(format!("--delimiter={}", "\t"))
+        .arg("--with-nth=2..")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to start fzf repo picker")?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("failed to open fzf stdin"))?;
+        stdin.write_all(input.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if matches!(output.status.code(), Some(1 | 130)) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        bail!("fzf repo picker exited with status {}", output.status);
+    }
+
+    let selected = String::from_utf8(output.stdout).context("fzf output was not UTF-8")?;
+    let name = selected
+        .trim_end()
+        .split_once('\t')
+        .map(|(key, _)| key)
+        .unwrap_or_else(|| selected.trim());
+
+    if name.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(name.to_string()))
+    }
+}
+
+pub struct NewWorktreeInput {
+    pub path: PathBuf,
+    pub branch: String,
+}
+
+pub fn pick_new_worktree(journey_id: &str, repo_root: &Path) -> Result<Option<NewWorktreeInput>> {
+    let slug = crate::storage::slugify(journey_id);
+
+    let branch = fzf_prompt_text(
+        "Branch>",
+        &format!("New branch name (default: {slug}) | esc: cancel"),
+        false,
+    )?;
+    let Some(branch_raw) = branch else {
+        return Ok(None);
+    };
+    let branch = if branch_raw.is_empty() {
+        slug.clone()
+    } else {
+        branch_raw
+    };
+
+    let default_path = repo_root.join(format!(".worktrees/{branch}"));
+    let default_path_str = default_path.display().to_string();
+
+    let path_str = fzf_prompt_text(
+        "Path>",
+        &format!("Worktree path (default: {default_path_str}) | esc: cancel"),
+        false,
+    )?;
+    let Some(path_raw) = path_str else {
+        return Ok(None);
+    };
+    let path = if path_raw.is_empty() {
+        default_path
+    } else {
+        PathBuf::from(path_raw)
+    };
+
+    Ok(Some(NewWorktreeInput { path, branch }))
 }
 
 fn ensure_fzf() -> Result<()> {
@@ -554,5 +652,6 @@ mod tests {
     fn journey_action_menu_opens_shell_first() {
         assert_eq!(JOURNEY_ACTIONS[0], ("shell", "cd journey"));
         assert_eq!(JOURNEY_ACTIONS[1], ("resume", "Resume"));
+        assert_eq!(JOURNEY_ACTIONS[2], ("worktree", "New branch + worktree"));
     }
 }

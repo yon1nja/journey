@@ -142,6 +142,8 @@ fn fzf_action_menu(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
     match action.as_str() {
         "resume" => notify_action(resume(home, cwd, Some(journey_id))?),
         "link" => notify_action(link_repo(home, cwd, Some(journey_id), cwd, None)?),
+        "worktree" => create_and_link_worktree(home, cwd, journey_id),
+        "unlink" => pick_and_unlink_repo(home, cwd, journey_id),
         "status" => notify_action(status(home, cwd, Some(journey_id))?),
         "shell" => open_shell_in_journey(home, journey_id),
         "path" => notify_action(storage::journey_dir(home, journey_id).display().to_string()),
@@ -219,6 +221,43 @@ fn notify_action(output: String) -> Result<()> {
         picker::fzf_notify(&output)?;
     }
     Ok(())
+}
+
+fn pick_and_unlink_repo(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
+    let ctx = storage::resolve_context(home, Some(journey_id), cwd)?;
+    if ctx.journey.repos.is_empty() {
+        return notify_action("no repos linked to this journey".to_string());
+    }
+
+    let Some(repo_name) = picker::pick_repo_to_unlink(journey_id, &ctx.journey.repos)? else {
+        return Ok(());
+    };
+
+    notify_action(unlink_repo(home, cwd, Some(journey_id), &repo_name)?)
+}
+
+fn create_and_link_worktree(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
+    let discovered = git::discover_repo(cwd)?;
+    let Some(input) = picker::pick_new_worktree(journey_id, &discovered.root)? else {
+        return Ok(());
+    };
+
+    git::create_worktree(&discovered.root, &input.path, &input.branch, true)?;
+
+    let repo_name = input
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "worktree".to_string());
+    let linked = link_repo(home, cwd, Some(journey_id), &input.path, Some(repo_name))?;
+
+    let msg = format!(
+        "created worktree {} on branch `{}`\n{}",
+        input.path.display(),
+        input.branch,
+        linked
+    );
+    notify_action(msg)
 }
 
 fn open_shell_in_journey(home: &Path, journey_id: &str) -> Result<()> {
