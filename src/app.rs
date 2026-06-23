@@ -5,7 +5,6 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
-use console::style;
 
 use crate::cli::{join_words, Cli, Commands, DocCommands};
 use crate::events;
@@ -74,21 +73,6 @@ fn new_journey(home: &Path, title: &str, description: Option<String>) -> Result<
     ))
 }
 
-fn ui_active(value: &str) -> String {
-    style(value).cyan().bold().force_styling(true).to_string()
-}
-
-fn ui_success(value: &str) -> String {
-    style(value).green().bold().force_styling(true).to_string()
-}
-
-fn ui_dim(value: &str) -> String {
-    style(value).dim().force_styling(true).to_string()
-}
-
-fn ui_label(value: &str) -> String {
-    ui_dim(value)
-}
 
 fn clean_optional(value: Option<String>) -> Option<String> {
     value
