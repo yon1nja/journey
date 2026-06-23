@@ -58,6 +58,26 @@ pub enum Commands {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
+    #[command(name = "__fzf-action-items", hide = true)]
+    FzfActionItems { id: String },
+    #[command(name = "__fzf-dispatch", hide = true)]
+    FzfDispatch {
+        id: String,
+        action: String,
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    #[command(name = "__fzf-transform", hide = true)]
+    FzfTransform {
+        event: String,
+        item: String,
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
     /// Print a one-screen Journey summary.
     Status { id: Option<String> },
     /// Manage Journey-local docs.
