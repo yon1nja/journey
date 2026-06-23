@@ -7,9 +7,7 @@ use crate::models::JourneyStatus;
 #[derive(Debug, Parser)]
 #[command(name = "journey")]
 #[command(about = "Context persistence for engineering efforts")]
-#[command(
-    after_help = "Run `journey` with no subcommand to start the interactive Journey starter."
-)]
+#[command(after_help = "Run `journey` with no subcommand to start the interactive Journey app.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -17,7 +15,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Create a new Journey without opening the interactive starter.
+    /// Create a new Journey without opening the interactive app.
     New(NewArgs),
     /// Link a git repository or worktree to the current Journey.
     Link {
@@ -37,43 +35,16 @@ pub enum Commands {
     Resume(ContextIdArgs),
     /// List known Journeys.
     List {
-        /// Initial fzf query; hard filter with --non-interactive.
+        /// Initial status filter for the interactive UI; hard filter with --non-interactive.
         #[arg(long)]
         status: Option<JourneyStatus>,
-        /// Print table output instead of opening the real fzf UI.
+        /// Print table output instead of opening the interactive UI.
         #[arg(long)]
         non_interactive: bool,
     },
     /// Print shell integration for interactive directory changes.
     #[command(name = "shell-init")]
     ShellInit,
-    #[command(name = "__fzf-candidates", hide = true)]
-    FzfCandidates {
-        #[arg(long)]
-        query: Option<String>,
-    },
-    #[command(name = "__fzf-preview", hide = true)]
-    FzfPreview { id: String },
-    #[command(name = "__fzf-action-items", hide = true)]
-    FzfActionItems { id: String },
-    #[command(name = "__fzf-dispatch", hide = true)]
-    FzfDispatch {
-        id: String,
-        action: String,
-        #[arg(long)]
-        query: Option<String>,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-    },
-    #[command(name = "__fzf-transform", hide = true)]
-    FzfTransform {
-        event: String,
-        item: String,
-        #[arg(long)]
-        query: Option<String>,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-    },
     /// Print a one-screen Journey summary.
     Status { id: Option<String> },
     /// Manage Journey-local docs.

@@ -188,10 +188,6 @@ fn journey_description_is_stored_and_rendered() {
     let status = journey(&home, &["status", "described-journey"]);
     assert!(status.contains("description: Why this effort exists"));
 
-    let preview = journey(&home, &["__fzf-preview", "described-journey"]);
-    assert!(preview.contains("description:"));
-    assert!(preview.contains("Why this effort exists"));
-
     let journey_yaml =
         fs::read_to_string(home.join("journeys/described-journey/journey.yaml")).unwrap();
     assert!(journey_yaml.contains("description: Why this effort exists"));
@@ -218,28 +214,13 @@ fn resume_and_pause_are_lifecycle_status_changes() {
 }
 
 #[test]
-fn fzf_helpers_render_candidates_and_preview() {
+fn hidden_fzf_helpers_are_not_part_of_the_cli_surface() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
-    journey(&home, &["new", "Fzf", "Helper"]);
-    journey(&home, &["new", "Paused", "Helper"]);
-    journey(&home, &["pause", "paused-helper"]);
-    journey(&home, &["doc", "new", "popup", "--journey", "fzf-helper"]);
+    journey(&home, &["new", "Ratatui", "Helper"]);
 
-    let candidates = journey(&home, &["__fzf-candidates", "--query", "active"]);
-    assert!(candidates.contains("fzf-helper\tFzf Helper"));
-    assert!(!candidates.contains("paused-helper\tPaused Helper"));
-
-    let all_candidates = journey(&home, &["__fzf-candidates", "--query", ""]);
-    assert!(all_candidates.contains("fzf-helper\tFzf Helper"));
-    assert!(all_candidates.contains("paused-helper\tPaused Helper"));
-
-    let preview = journey(&home, &["__fzf-preview", "fzf-helper"]);
-    assert!(preview.contains("Fzf Helper"));
-    assert!(preview.contains("fzf-helper"));
-    assert!(preview.contains("docs/popup.md"));
-    assert!(!preview.contains("next actions"));
-    assert!(!preview.contains("checkpoint"));
+    let error = journey_fails(&home, &["__fzf-candidates", "--query", "active"]);
+    assert!(error.contains("unrecognized subcommand '__fzf-candidates'"));
 }
 
 #[test]
@@ -253,35 +234,6 @@ fn shell_init_wraps_journey_for_parent_shell_cd() {
     assert!(init.contains("JOURNEY_SHELL_INTEGRATION=1"));
     assert!(init.contains("__journey_cd__\t"));
     assert!(init.contains("builtin cd --"));
-}
-
-#[test]
-fn fzf_cd_action_exits_with_cd_request_under_shell_integration() {
-    let temp = TempDir::new().unwrap();
-    let home = temp.path().join("journey-home");
-    journey(&home, &["new", "Cd", "Target"]);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_journey"))
-        .env("JOURNEY_HOME", &home)
-        .env("JOURNEY_SHELL_INTEGRATION", "1")
-        .args(["__fzf-transform", "enter", "act:cd-target:shell"])
-        .output()
-        .expect("failed to run journey");
-
-    assert!(
-        output.status.success(),
-        "journey __fzf-transform failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8(output.stdout).expect("stdout was not UTF-8");
-    let expected_dir = home.join("journeys/cd-target").display().to_string();
-    assert!(stdout.contains("become(printf '%s\\n'"));
-    assert!(stdout.contains("__journey_cd__\t"));
-    assert!(stdout.contains(&expected_dir));
-    assert!(!stdout.contains("$SHELL"));
-    assert!(!stdout.contains("execute(cd"));
 }
 
 #[test]
