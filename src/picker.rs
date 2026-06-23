@@ -27,12 +27,10 @@ pub fn run_journey_list(
     let reload_command = format!("{exe} __fzf-candidates --query={{q}}");
 
     // Transform binds: the Rust binary decides what fzf does on Enter/Esc
-    let enter_bind = format!(
-        "enter:transform:{exe} __fzf-transform enter {{1}} --query={{q}} --cwd={cwd_str}"
-    );
-    let esc_bind = format!(
-        "esc:transform:{exe} __fzf-transform esc {{1}} --query={{q}} --cwd={cwd_str}"
-    );
+    let enter_bind =
+        format!("enter:transform:{exe} __fzf-transform enter {{1}} --query={{q}} --cwd={cwd_str}");
+    let esc_bind =
+        format!("esc:transform:{exe} __fzf-transform esc {{1}} --query={{q}} --cwd={cwd_str}");
     let refresh_bind = format!("ctrl-r:reload({reload_command})");
     let change_bind = format!("change:reload({reload_command})");
 
@@ -54,9 +52,8 @@ pub fn run_journey_list(
         "ctrl-n:reload(echo '{new_title_items}')+change-prompt(Title> )+change-header(New journey | type a title + enter | esc: cancel)+clear-query+disable-search"
     );
 
-    let header = format!(
-        "Journey list | enter: actions | ctrl-n: new journey{git_hint} | ctrl-r: reload"
-    );
+    let header =
+        format!("Journey list | enter: actions | ctrl-n: new journey{git_hint} | ctrl-r: reload");
 
     let mut child = Command::new("fzf")
         .arg("--ansi")
@@ -134,7 +131,7 @@ pub fn build_new_journey_preview(item_key: &str) -> String {
     let parts: Vec<&str> = rest.splitn(3, ':').collect();
     match parts.first().copied() {
         Some("title") => {
-            let _ = writeln!(out, "{} {}", label("step:"), "Enter a title");
+            let _ = writeln!(out, "{} Enter a title", label("step:"));
             let _ = writeln!(
                 out,
                 "\n{}",
@@ -144,7 +141,7 @@ pub fn build_new_journey_preview(item_key: &str) -> String {
         Some("desc") => {
             let title = parts.get(1).unwrap_or(&"");
             let _ = writeln!(out, "{} {}", label("title:"), title);
-            let _ = writeln!(out, "{} {}", label("step:"), "Enter a description (optional)");
+            let _ = writeln!(out, "{} Enter a description (optional)", label("step:"));
             let _ = writeln!(
                 out,
                 "\n{}",

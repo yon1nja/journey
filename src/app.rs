@@ -12,6 +12,9 @@ use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
 use crate::picker;
 use crate::storage::{self, JourneyContext};
 
+const SHELL_INTEGRATION_ENV: &str = "JOURNEY_SHELL_INTEGRATION";
+const SHELL_CD_PREFIX: &str = "__journey_cd__\t";
+
 pub fn run(cli: Cli) -> Result<String> {
     let home = storage::journey_home()?;
     let cwd = env::current_dir().context("failed to read current directory")?;
@@ -37,6 +40,7 @@ pub fn run(cli: Cli) -> Result<String> {
             status.unwrap_or(JourneyStatus::Active),
             non_interactive,
         ),
+        Some(Commands::ShellInit) => shell_init(),
         Some(Commands::FzfCandidates { query }) => fzf_candidates(&home, query.as_deref()),
         Some(Commands::FzfPreview { id }) => fzf_preview(&home, &id),
         Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
@@ -52,11 +56,21 @@ pub fn run(cli: Cli) -> Result<String> {
             set_status(&home, &cwd, args.id.as_deref(), JourneyStatus::Abandoned)
         }
         Some(Commands::FzfActionItems { id }) => fzf_action_items(&id),
-        Some(Commands::FzfDispatch { id, action, query, cwd: override_cwd }) => {
+        Some(Commands::FzfDispatch {
+            id,
+            action,
+            query,
+            cwd: override_cwd,
+        }) => {
             let effective_cwd = override_cwd.unwrap_or_else(|| cwd.clone());
             fzf_dispatch(&home, &effective_cwd, &id, &action, query.as_deref())
         }
-        Some(Commands::FzfTransform { event, item, query, cwd: override_cwd }) => {
+        Some(Commands::FzfTransform {
+            event,
+            item,
+            query,
+            cwd: override_cwd,
+        }) => {
             let effective_cwd = override_cwd.unwrap_or_else(|| cwd.clone());
             fzf_transform(&home, &effective_cwd, &event, &item, query.as_deref())
         }
@@ -94,7 +108,10 @@ fn list_journeys(
         return Ok("no Journeys".to_string());
     }
 
-    if !non_interactive && io::stdout().is_terminal() {
+    if !non_interactive
+        && (io::stdout().is_terminal()
+            || (shell_integration_active() && io::stderr().is_terminal()))
+    {
         picker::run_journey_list(default_filter, &rows, cwd)?;
         return Ok(String::new());
     }
@@ -458,6 +475,32 @@ fn shell_quote_value(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn shell_integration_active() -> bool {
+    env::var_os(SHELL_INTEGRATION_ENV).is_some()
+}
+
+fn shell_init() -> Result<String> {
+    let exe = env::current_exe().context("failed to resolve current executable")?;
+    let exe_q = shell_quote(&exe);
+    let cd_prefix_q = shell_quote_value(SHELL_CD_PREFIX);
+    Ok(format!(
+        r#"journey() {{
+    local __journey_output __journey_status __journey_prefix
+    __journey_prefix={cd_prefix_q}
+    __journey_output="$(JOURNEY_SHELL_INTEGRATION=1 {exe_q} "$@")"
+    __journey_status=$?
+    if [ $__journey_status -eq 0 ] && [ "${{__journey_output#"$__journey_prefix"}}" != "$__journey_output" ]; then
+        builtin cd -- "${{__journey_output#"$__journey_prefix"}}"
+        return
+    fi
+    if [ -n "$__journey_output" ]; then
+        printf '%s\n' "$__journey_output"
+    fi
+    return $__journey_status
+}}"#
+    ))
+}
+
 fn fzf_action_items(journey_id: &str) -> Result<String> {
     const JOURNEY_ACTIONS: [(&str, &str); 10] = [
         ("shell", "cd journey"),
@@ -478,7 +521,13 @@ fn fzf_action_items(journey_id: &str) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
-fn fzf_dispatch(home: &Path, cwd: &Path, journey_id: &str, action: &str, query: Option<&str>) -> Result<String> {
+fn fzf_dispatch(
+    home: &Path,
+    cwd: &Path,
+    journey_id: &str,
+    action: &str,
+    query: Option<&str>,
+) -> Result<String> {
     match action {
         "resume" => resume(home, cwd, Some(journey_id)),
         "link" => link_repo(home, cwd, Some(journey_id), cwd, None),
@@ -523,44 +572,24 @@ fn fzf_dispatch(home: &Path, cwd: &Path, journey_id: &str, action: &str, query: 
             if title.is_empty() {
                 bail!("title is required");
             }
-            let desc = if desc.is_empty() { None } else { Some(desc.to_string()) };
+            let desc = if desc.is_empty() {
+                None
+            } else {
+                Some(desc.to_string())
+            };
             new_journey(home, title, desc)
-        }
-        "new-journey-attach" => {
-            let journey_id_actual = query.unwrap_or("");
-            if journey_id_actual.is_empty() {
-                bail!("missing journey id");
-            }
-            link_repo(home, cwd, Some(journey_id_actual), cwd, None)
-        }
-        "new-journey-worktree" => {
-            // query format: "journey_id\tbranch\tpath"
-            let q = query.unwrap_or("");
-            let parts: Vec<&str> = q.splitn(3, '\t').collect();
-            if parts.len() < 3 {
-                bail!("missing journey_id, branch, or path");
-            }
-            let (jid, branch, path) = (parts[0], parts[1], parts[2]);
-            let discovered = git::discover_repo(cwd)?;
-            let wt_path = std::path::PathBuf::from(path);
-            git::create_worktree(&discovered.root, &wt_path, branch, true)?;
-            let repo_name = wt_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "worktree".to_string());
-            let linked = link_repo(home, cwd, Some(jid), &wt_path, Some(repo_name))?;
-            Ok(format!(
-                "created worktree {} on branch `{}`\n{}",
-                wt_path.display(),
-                branch,
-                linked
-            ))
         }
         _ => bail!("unknown dispatch action: {action}"),
     }
 }
 
-fn fzf_transform(home: &Path, cwd: &Path, event: &str, item: &str, query: Option<&str>) -> Result<String> {
+fn fzf_transform(
+    home: &Path,
+    cwd: &Path,
+    event: &str,
+    item: &str,
+    query: Option<&str>,
+) -> Result<String> {
     let exe = shell_quote(&env::current_exe().context("failed to resolve current executable")?);
     let cwd_str = shell_quote(cwd);
     let reload_list = format!("{exe} __fzf-candidates --query={{q}}");
@@ -586,8 +615,9 @@ fn fzf_transform_enter(
     // --- Journey list mode: switch to action menu ---
     if !item.contains(':') && !item.is_empty() {
         let journey_id = item;
-        let reload_actions = format!("{exe} __fzf-action-items {journey_id}");
-        let preview = format!("{exe} __fzf-preview {journey_id}");
+        let journey_id_q = shell_quote_value(journey_id);
+        let reload_actions = format!("{exe} __fzf-action-items {journey_id_q}");
+        let preview = format!("{exe} __fzf-preview {journey_id_q}");
         return Ok(format!(
             "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search"
         ));
@@ -602,12 +632,13 @@ fn fzf_transform_enter(
     // --- Unlink picker mode ---
     if let Some(rest) = item.strip_prefix("repo:") {
         let (journey_id, repo_name) = rest.split_once(':').unwrap_or((rest, ""));
+        let journey_id_q = shell_quote_value(journey_id);
         let dispatch = format!(
-            "{exe} __fzf-dispatch {journey_id} unlink --query={} --cwd={cwd_str}",
+            "{exe} __fzf-dispatch {journey_id_q} unlink --query={} --cwd={cwd_str}",
             shell_quote_value(repo_name)
         );
         return Ok(format!(
-            "execute-silent({dispatch})+reload({reload_list})+change-prompt(Journeys> )+transform-header({exe} __fzf-dispatch {journey_id} unlink --query={} --cwd={cwd_str} 2>&1 || true)+clear-query+enable-search",
+            "execute-silent({dispatch})+reload({reload_list})+change-prompt(Journeys> )+transform-header({exe} __fzf-dispatch {journey_id_q} unlink --query={} --cwd={cwd_str} 2>&1 || true)+clear-query+enable-search",
             shell_quote_value(repo_name)
         ));
     }
@@ -635,13 +666,24 @@ fn fzf_transform_action(
     action: &str,
 ) -> Result<String> {
     match action {
-        // Shell needs execute (interactive terminal)
+        // A real cd must be completed by the caller's shell integration.
         "shell" => {
             let dir = storage::journey_dir(home, journey_id);
-            let dir_str = shell_quote(&dir);
-            let shell_cmd = "$SHELL -l".to_string();
+            if shell_integration_active() {
+                let cd_request = format!("{SHELL_CD_PREFIX}{}", dir.display());
+                return Ok(format!(
+                    "become(printf '%s\\n' {})",
+                    shell_quote_value(&cd_request)
+                ));
+            }
+
+            let message = format!(
+                "selected Journey path: {} (enable parent-shell cd with: eval \"$(journey shell-init)\")",
+                dir.display()
+            );
             Ok(format!(
-                "execute(cd {dir_str} && {shell_cmd})+reload({reload_list})+change-prompt(Journeys> )+change-header(Journey list | enter: actions | ctrl-n: new journey | ctrl-r: reload)+clear-query+enable-search"
+                "become(printf '%s\\n' {})",
+                shell_quote_value(&message)
             ))
         }
 
@@ -662,25 +704,38 @@ fn fzf_transform_action(
                     "change-header(No repos linked to this journey | press any key)+change-prompt(> )".to_string()
                 );
             }
-            let items: Vec<String> = ctx.journey.repos.iter().map(|r| {
-                format!("repo:{journey_id}:{}\t{}  ({})", r.name, r.name, r.worktree.display())
-            }).collect();
+            let items: Vec<String> = ctx
+                .journey
+                .repos
+                .iter()
+                .map(|r| {
+                    format!(
+                        "repo:{journey_id}:{}\t{}  ({})",
+                        r.name,
+                        r.name,
+                        r.worktree.display()
+                    )
+                })
+                .collect();
             let items_str = items.join("\n");
-            let preview = format!("{exe} __fzf-preview {journey_id}");
+            let journey_id_q = shell_quote_value(journey_id);
+            let preview = format!("{exe} __fzf-preview {journey_id_q}");
             Ok(format!(
-                "reload(printf '%s\\n' {})+change-prompt(Unlink> )+change-header(Select repo to unlink from {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search",
+                "reload(echo {})+change-prompt(Unlink> )+change-header(Select repo to unlink from {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search",
                 shell_quote_value(&items_str)
             ))
         }
 
         // All other simple actions: dispatch silently, show result in header
         _ => {
+            let journey_id_q = shell_quote_value(journey_id);
+            let action_q = shell_quote_value(action);
             let dispatch = format!(
-                "{exe} __fzf-dispatch {journey_id} {action} --cwd={cwd_str} 2>&1 || true"
+                "{exe} __fzf-dispatch {journey_id_q} {action_q} --cwd={cwd_str} 2>&1 || true"
             );
             let preview = format!("{exe} __fzf-preview {{1}}");
             Ok(format!(
-                "execute-silent({exe} __fzf-dispatch {journey_id} {action} --cwd={cwd_str} 2>/dev/null)+reload({reload_list})+change-prompt(Journeys> )+transform-header({dispatch})+change-preview({preview})+clear-query+enable-search"
+                "execute-silent({exe} __fzf-dispatch {journey_id_q} {action_q} --cwd={cwd_str} 2>/dev/null)+reload({reload_list})+change-prompt(Journeys> )+transform-header({dispatch})+change-preview({preview})+clear-query+enable-search"
             ))
         }
     }
@@ -702,7 +757,11 @@ fn fzf_transform_wizard(
     match parts.get(1).copied() {
         Some("branch") => {
             let default_branch = parts.get(2).unwrap_or(&"");
-            let branch = if query.is_empty() { default_branch } else { query };
+            let branch = if query.is_empty() {
+                default_branch
+            } else {
+                query
+            };
             let discovered = git::discover_repo(cwd)?;
             let default_path = discovered.root.join(format!(".worktrees/{branch}"));
             let default_path_str = default_path.display().to_string();
@@ -715,7 +774,11 @@ fn fzf_transform_wizard(
         Some("path") => {
             let branch = parts.get(2).unwrap_or(&"");
             let default_path = parts.get(3).unwrap_or(&"");
-            let path = if query.is_empty() { default_path } else { query };
+            let path = if query.is_empty() {
+                default_path
+            } else {
+                query
+            };
             let dispatch_query = format!("{branch}\t{path}");
             let dispatch = format!(
                 "{exe} __fzf-dispatch {journey_id} worktree --query={} --cwd={cwd_str}",
@@ -746,7 +809,9 @@ fn fzf_transform_new_journey(
         // Step 1: title entered → move to description
         Some("title") => {
             if query.trim().is_empty() {
-                return Ok("change-header(Title is required — type a title and press Enter)".to_string());
+                return Ok(
+                    "change-header(Title is required — type a title and press Enter)".to_string(),
+                );
             }
             let title = query.trim();
             let escaped_title = title.replace('\'', "'\\''");
@@ -781,11 +846,7 @@ fn fzf_transform_new_journey(
     }
 }
 
-fn fzf_transform_esc(
-    exe: &str,
-    reload_list: &str,
-    item: &str,
-) -> Result<String> {
+fn fzf_transform_esc(exe: &str, reload_list: &str, item: &str) -> Result<String> {
     let list_header = "Journey list | enter: actions | ctrl-n: new journey | ctrl-r: reload";
     let preview = format!("{exe} __fzf-preview {{1}}");
     let back_to_list = format!(
@@ -805,8 +866,9 @@ fn fzf_transform_esc(
     // In unlink picker → back to action menu for that journey
     if let Some(rest) = item.strip_prefix("repo:") {
         let journey_id = rest.split(':').next().unwrap_or("");
-        let reload_actions = format!("{exe} __fzf-action-items {journey_id}");
-        let preview = format!("{exe} __fzf-preview {journey_id}");
+        let journey_id_q = shell_quote_value(journey_id);
+        let reload_actions = format!("{exe} __fzf-action-items {journey_id_q}");
+        let preview = format!("{exe} __fzf-preview {journey_id_q}");
         return Ok(format!(
             "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search"
         ));
@@ -815,20 +877,22 @@ fn fzf_transform_esc(
     // In worktree wizard → back to action menu
     if let Some(rest) = item.strip_prefix("wiz:") {
         let journey_id = rest.split(':').next().unwrap_or("");
+        let journey_id_q = shell_quote_value(journey_id);
         let parts: Vec<&str> = rest.splitn(4, ':').collect();
         match parts.get(1).copied() {
             // From path step → back to branch step
             Some("path") => {
                 let slug = storage::slugify(journey_id);
-                let item_key = format!("wiz:{journey_id}:branch:{slug}");
+                let branch = parts.get(2).copied().unwrap_or(slug.as_str());
+                let item_key = format!("wiz:{journey_id}:branch:{branch}");
                 return Ok(format!(
-                    "reload(echo '{item_key}\tDefault: {slug}')+change-prompt(Branch> )+change-header(New branch (default: {slug}) | type name + enter | esc: back)+clear-query"
+                    "reload(echo '{item_key}\tDefault: {branch}')+change-prompt(Branch> )+change-header(New branch (default: {branch}) | type name + enter | esc: back)+clear-query"
                 ));
             }
             // From branch step → back to action menu
             _ => {
-                let reload_actions = format!("{exe} __fzf-action-items {journey_id}");
-                let preview = format!("{exe} __fzf-preview {journey_id}");
+                let reload_actions = format!("{exe} __fzf-action-items {journey_id_q}");
+                let preview = format!("{exe} __fzf-preview {journey_id_q}");
                 return Ok(format!(
                     "reload({reload_actions})+change-prompt(Action> )+change-header(Actions for {journey_id} | esc: back)+change-preview({preview})+clear-query+disable-search"
                 ));
@@ -838,13 +902,15 @@ fn fzf_transform_esc(
 
     // In new journey wizard → back to list
     if item.starts_with("new:") {
-        let parts: Vec<&str> = item.strip_prefix("new:").unwrap_or("").splitn(3, ':').collect();
+        let parts: Vec<&str> = item
+            .strip_prefix("new:")
+            .unwrap_or("")
+            .splitn(3, ':')
+            .collect();
         match parts.first().copied() {
             // From desc step → back to title step
             Some("desc") => {
-                return Ok(format!(
-                    "reload(echo 'new:title\tType title and press Enter')+change-prompt(Title> )+change-header(New journey | type a title + enter | esc: cancel)+clear-query"
-                ));
+                return Ok("reload(echo 'new:title\tType title and press Enter')+change-prompt(Title> )+change-header(New journey | type a title + enter | esc: cancel)+clear-query+disable-search".to_string());
             }
             // From title step or anything else → back to list
             _ => return Ok(back_to_list),

@@ -44,6 +44,9 @@ pub enum Commands {
         #[arg(long)]
         non_interactive: bool,
     },
+    /// Print shell integration for interactive directory changes.
+    #[command(name = "shell-init")]
+    ShellInit,
     #[command(name = "__fzf-candidates", hide = true)]
     FzfCandidates {
         #[arg(long)]

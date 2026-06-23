@@ -243,6 +243,48 @@ fn fzf_helpers_render_candidates_and_preview() {
 }
 
 #[test]
+fn shell_init_wraps_journey_for_parent_shell_cd() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+
+    let init = journey(&home, &["shell-init"]);
+
+    assert!(init.contains("journey() {"));
+    assert!(init.contains("JOURNEY_SHELL_INTEGRATION=1"));
+    assert!(init.contains("__journey_cd__\t"));
+    assert!(init.contains("builtin cd --"));
+}
+
+#[test]
+fn fzf_cd_action_exits_with_cd_request_under_shell_integration() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Cd", "Target"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_journey"))
+        .env("JOURNEY_HOME", &home)
+        .env("JOURNEY_SHELL_INTEGRATION", "1")
+        .args(["__fzf-transform", "enter", "act:cd-target:shell"])
+        .output()
+        .expect("failed to run journey");
+
+    assert!(
+        output.status.success(),
+        "journey __fzf-transform failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout was not UTF-8");
+    let expected_dir = home.join("journeys/cd-target").display().to_string();
+    assert!(stdout.contains("become(printf '%s\\n'"));
+    assert!(stdout.contains("__journey_cd__\t"));
+    assert!(stdout.contains(&expected_dir));
+    assert!(!stdout.contains("$SHELL"));
+    assert!(!stdout.contains("execute(cd"));
+}
+
+#[test]
 fn context_resolves_from_inside_attached_worktree() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
