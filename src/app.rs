@@ -142,6 +142,7 @@ fn fzf_action_menu(home: &Path, cwd: &Path, journey_id: &str) -> Result<()> {
 
     match action.as_str() {
         "resume" => print_action_output(resume(home, cwd, Some(journey_id))?),
+        "link" => print_action_output(link_repo(home, cwd, Some(journey_id), cwd, None)?),
         "status" => print_action_output(status(home, cwd, Some(journey_id))?),
         "shell" => open_shell_in_journey(home, journey_id),
         "path" => print_action_output(storage::journey_dir(home, journey_id).display().to_string()),

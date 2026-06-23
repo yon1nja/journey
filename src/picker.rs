@@ -147,6 +147,7 @@ pub fn pick_journey_action(journey_id: &str) -> Result<Option<String>> {
 
     let actions = [
         ("resume", "Resume"),
+        ("link", "Link current worktree"),
         ("status", "Status"),
         ("shell", "Open shell in Journey folder"),
         ("path", "Print Journey path"),
