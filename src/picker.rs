@@ -46,10 +46,18 @@ pub fn run_journey_list(
     let default_query = default_filter.to_string();
     let input = candidate_lines(rows, Some(&default_query));
     let exe = shell_quote(&env::current_exe().context("failed to resolve current executable")?);
-    let action_command = format!("{exe} __fzf-action-menu {{1}}");
+    let cwd_str = shell_quote(cwd);
+
     let preview_command = format!("{exe} __fzf-preview {{1}}");
     let reload_command = format!("{exe} __fzf-candidates --query={{q}}");
-    let enter_bind = format!("enter:execute({action_command})+reload({reload_command})");
+
+    // Transform binds: the Rust binary decides what fzf does on Enter/Esc
+    let enter_bind = format!(
+        "enter:transform:{exe} __fzf-transform enter {{1}} --query={{q}} --cwd={cwd_str}"
+    );
+    let esc_bind = format!(
+        "esc:transform:{exe} __fzf-transform esc {{1}} --query={{q}} --cwd={cwd_str}"
+    );
     let refresh_bind = format!("ctrl-r:reload({reload_command})");
     let change_bind = format!("change:reload({reload_command})");
 
@@ -65,9 +73,15 @@ pub fn run_journey_list(
         })
         .unwrap_or_default();
 
-    let cwd_str = shell_quote(cwd);
-    let new_journey_command = format!("{exe} __fzf-new-journey --cwd={cwd_str}");
-    let new_bind = format!("ctrl-n:execute({new_journey_command})+reload({reload_command})");
+    // ctrl-n starts the new journey wizard inline
+    let new_title_items = "new:title\tType title and press Enter";
+    let new_bind = format!(
+        "ctrl-n:reload(echo '{new_title_items}')+change-prompt(Title> )+change-header(New journey | type a title + enter | esc: cancel)+clear-query+disable-search"
+    );
+
+    let header = format!(
+        "Journey list | enter: actions | ctrl-n: new journey{git_hint} | ctrl-r: reload"
+    );
 
     let mut child = Command::new("fzf")
         .arg("--ansi")
@@ -79,14 +93,13 @@ pub fn run_journey_list(
         .arg("--height=100%")
         .arg(format!("--prompt=Journeys [{default_filter}]> "))
         .arg(format!("--query={default_query}"))
-        .arg(format!(
-            "--header=Journey list | enter: actions | ctrl-n: new journey{git_hint} | ctrl-r: reload"
-        ))
+        .arg(format!("--header={header}"))
         .arg(format!("--delimiter={}", "\t"))
         .arg("--with-nth=2..")
         .arg("--preview-window=right:60%:wrap")
         .arg(format!("--preview={preview_command}"))
         .arg(format!("--bind={enter_bind}"))
+        .arg(format!("--bind={esc_bind}"))
         .arg(format!("--bind={refresh_bind}"))
         .arg(format!("--bind={change_bind}"))
         .arg(format!("--bind={new_bind}"))
