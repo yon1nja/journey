@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::cli::{join_words, Cli, Commands, DocCommands};
+use crate::cli::{join_words, Cli, Commands, DocCommands, ReadmeCommands};
 use crate::events;
 use crate::git;
 use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
@@ -43,6 +43,7 @@ pub fn run(cli: Cli) -> Result<String> {
         Some(Commands::ShellInit) => shell_init(),
         Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
+        Some(Commands::Readme { command }) => readme_command(&home, &cwd, command),
         Some(Commands::Doctor { repair }) => doctor(&home, repair),
         Some(Commands::Pause(args)) => {
             set_status(&home, &cwd, args.id.as_deref(), JourneyStatus::Paused)
@@ -296,6 +297,26 @@ fn doc_command(home: &Path, cwd: &Path, command: DocCommands) -> Result<String> 
         DocCommands::Path { name, journey } => {
             let ctx = storage::resolve_context(home, journey.as_deref(), cwd)?;
             Ok(storage::doc_path(&ctx.path, &name)?.display().to_string())
+        }
+    }
+}
+
+fn readme_command(home: &Path, cwd: &Path, command: ReadmeCommands) -> Result<String> {
+    match command {
+        ReadmeCommands::New { journey } => {
+            let ctx = storage::resolve_context(home, journey.as_deref(), cwd)?;
+            let path = ctx.path.join(storage::README_FILE);
+            if path.exists() {
+                bail!("README already exists: {}", path.display());
+            }
+            storage::write_string_atomic(&path, &format!("# {}\n\n", ctx.journey.title))?;
+            let now = events::now_rfc3339()?;
+            storage::update_index_entry(home, &ctx.journey, &now)?;
+            Ok(path.display().to_string())
+        }
+        ReadmeCommands::Path { journey } => {
+            let ctx = storage::resolve_context(home, journey.as_deref(), cwd)?;
+            Ok(ctx.path.join(storage::README_FILE).display().to_string())
         }
     }
 }

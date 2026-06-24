@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tempfile::TempDir;
@@ -83,6 +83,11 @@ fn full_cli_flow_links_docs_and_worktrees_without_generated_state() {
 
     let created = journey(&home, &["new", "Test", "Journey"]);
     assert!(created.contains("`test-journey`"));
+
+    let agents = fs::read_to_string(home.join("journeys/test-journey/AGENTS.md")).unwrap();
+    assert!(agents.contains("README.md"));
+    assert!(agents.contains("journey readme new"));
+    assert!(agents.contains("interactive Details pane"));
 
     let doc_path = journey(
         &home,
@@ -191,6 +196,27 @@ fn journey_description_is_stored_and_rendered() {
     let journey_yaml =
         fs::read_to_string(home.join("journeys/described-journey/journey.yaml")).unwrap();
     assert!(journey_yaml.contains("description: Why this effort exists"));
+}
+
+#[test]
+fn readme_command_creates_root_readme_without_overwriting() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Readme", "Journey"]);
+
+    let readme_path = journey(&home, &["readme", "new", "--journey", "readme-journey"]);
+    let readme_path = PathBuf::from(readme_path.trim());
+    assert_eq!(readme_path, home.join("journeys/readme-journey/README.md"));
+    assert_eq!(
+        fs::read_to_string(&readme_path).unwrap(),
+        "# Readme Journey\n\n"
+    );
+
+    let printed_path = journey(&home, &["readme", "path", "--journey", "readme-journey"]);
+    assert_eq!(printed_path.trim(), readme_path.display().to_string());
+
+    let error = journey_fails(&home, &["readme", "new", "--journey", "readme-journey"]);
+    assert!(error.contains("README already exists"));
 }
 
 #[test]

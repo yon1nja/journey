@@ -9,11 +9,17 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use pulldown_cmark::{
+    CodeBlockKind, Event as MarkdownEvent, HeadingLevel, Options, Parser, Tag, TagEnd,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
+    Table, TableState, Wrap,
+};
 use ratatui::{Frame, Terminal};
 
 use crate::app;
@@ -53,14 +59,12 @@ fn terminal_writer() -> TerminalWriter {
     }
 }
 
-const ACTIONS: [JourneyAction; 10] = [
+const ACTIONS: [JourneyAction; 8] = [
     JourneyAction::Cd,
     JourneyAction::Resume,
     JourneyAction::Worktree,
     JourneyAction::Link,
     JourneyAction::Unlink,
-    JourneyAction::Status,
-    JourneyAction::Path,
     JourneyAction::Pause,
     JourneyAction::Archive,
     JourneyAction::Abandon,
@@ -120,7 +124,7 @@ struct JourneyApp {
     filter: StatusFilter,
     query: String,
     selected: usize,
-    list_state: ListState,
+    table_state: TableState,
     focus: Focus,
     action_selected: usize,
     action_state: ListState,
@@ -140,7 +144,7 @@ impl JourneyApp {
             filter: StatusFilter::Status(default_filter),
             query: String::new(),
             selected: 0,
-            list_state: ListState::default(),
+            table_state: TableState::default(),
             focus: Focus::Journeys,
             action_selected: 0,
             action_state: ListState::default(),
@@ -218,10 +222,6 @@ impl JourneyApp {
                     None
                 }
                 KeyCode::Enter => Some(DialogAction::SubmitUnlink),
-                _ => None,
-            },
-            Dialog::Message { .. } => match key.code {
-                KeyCode::Esc | KeyCode::Enter => Some(DialogAction::Cancel),
                 _ => None,
             },
         };
@@ -441,22 +441,6 @@ impl JourneyApp {
                 let _ = self.record_mutation(result, Some(journey_id));
             }
             JourneyAction::Unlink => self.open_unlink_dialog(&journey_id),
-            JourneyAction::Status => match app::status(&self.home, &self.cwd, Some(&journey_id)) {
-                Ok(body) => {
-                    self.dialog = Dialog::Message {
-                        title: format!("Status: {journey_id}"),
-                        body,
-                    };
-                }
-                Err(err) => self.notice_error(err.to_string()),
-            },
-            JourneyAction::Path => {
-                let path = storage::journey_dir(&self.home, &journey_id);
-                self.dialog = Dialog::Message {
-                    title: format!("Path: {journey_id}"),
-                    body: path.display().to_string(),
-                };
-            }
             JourneyAction::Pause => {
                 let result = app::set_status(
                     &self.home,
@@ -572,7 +556,7 @@ impl JourneyApp {
 
         if self.filtered.is_empty() {
             self.selected = 0;
-            self.list_state.select(None);
+            self.table_state.select(None);
             return;
         }
 
@@ -583,7 +567,7 @@ impl JourneyApp {
                     .position(|idx| self.rows[*idx].id == id)
             })
             .unwrap_or_else(|| self.selected.min(self.filtered.len() - 1));
-        self.sync_list_state();
+        self.sync_table_state();
     }
 
     fn entry_matches(&self, entry: &IndexEntry) -> bool {
@@ -630,7 +614,7 @@ impl JourneyApp {
         let len = self.filtered.len() as isize;
         let next = (self.selected as isize + delta).clamp(0, len - 1);
         self.selected = next as usize;
-        self.sync_list_state();
+        self.sync_table_state();
     }
 
     fn cycle_filter(&mut self, reverse: bool) {
@@ -638,11 +622,11 @@ impl JourneyApp {
         self.apply_filter(None);
     }
 
-    fn sync_list_state(&mut self) {
+    fn sync_table_state(&mut self) {
         if self.filtered.is_empty() {
-            self.list_state.select(None);
+            self.table_state.select(None);
         } else {
-            self.list_state.select(Some(self.selected));
+            self.table_state.select(Some(self.selected));
         }
     }
 
@@ -723,15 +707,16 @@ fn render_header(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
 }
 
 fn render_journey_list(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
-    let items = if app.filtered.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
-            "No matching Journeys",
-            dim(),
-        )))]
+    let rows = if app.filtered.is_empty() {
+        vec![Row::new([
+            Cell::from("No matching Journeys").style(dim()),
+            Cell::from(""),
+            Cell::from(""),
+        ])]
     } else {
         app.filtered
             .iter()
-            .map(|idx| journey_item(&app.rows[*idx]))
+            .map(|idx| journey_row(&app.rows[*idx]))
             .collect()
     };
 
@@ -746,34 +731,43 @@ fn render_journey_list(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) 
             Focus::Journeys => accent(),
             Focus::Actions => Style::default().fg(Color::DarkGray),
         });
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(selected())
-        .highlight_symbol("> ");
-    frame.render_stateful_widget(list, area, &mut app.list_state);
+    let header = Row::new([
+        Cell::from("Journey"),
+        Cell::from("Status"),
+        Cell::from("Repos"),
+    ])
+    .style(dim())
+    .bottom_margin(1);
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(54),
+            Constraint::Length(11),
+            Constraint::Min(10),
+        ],
+    )
+    .block(block)
+    .header(header)
+    .column_spacing(2)
+    .row_highlight_style(selected_row())
+    .highlight_symbol(selection_stroke())
+    .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn journey_item(entry: &IndexEntry) -> ListItem<'static> {
-    let repo_count = if entry.repos.is_empty() {
+fn journey_row(entry: &IndexEntry) -> Row<'static> {
+    let repos = if entry.repos.is_empty() {
         "no repos".to_string()
     } else if entry.repos.len() == 1 {
-        "1 repo".to_string()
+        entry.repos[0].clone()
     } else {
         format!("{} repos", entry.repos.len())
     };
-    ListItem::new(vec![
-        Line::from(vec![
-            Span::styled(entry.title.clone(), Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled(entry.id.clone(), dim()),
-        ]),
-        Line::from(vec![
-            Span::styled(entry.status.to_string(), status_style(entry.status)),
-            Span::raw("  "),
-            Span::styled(repo_count, dim()),
-            Span::raw("  "),
-            Span::styled(entry.updated.clone(), dim()),
-        ]),
+
+    Row::new([
+        Cell::from(entry.title.clone()).style(Style::default().fg(Color::White)),
+        Cell::from(entry.status.to_string()).style(status_style(entry.status)),
+        Cell::from(repos).style(dim()),
     ])
 }
 
@@ -920,20 +914,6 @@ fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
                 .highlight_symbol("> ");
             frame.render_stateful_widget(list, area, state);
         }
-        Dialog::Message { title, body } => {
-            let area = centered_rect(70, 60, area);
-            frame.render_widget(Clear, area);
-            let block = Block::default()
-                .title(format!(" {title} "))
-                .borders(Borders::ALL)
-                .border_style(accent());
-            frame.render_widget(
-                Paragraph::new(body.clone())
-                    .block(block)
-                    .wrap(Wrap { trim: false }),
-                area,
-            );
-        }
     }
 }
 
@@ -1007,6 +987,7 @@ fn detail_lines(app: &JourneyApp) -> Vec<Line<'static>> {
     lines.extend(repo_lines(&app.home, &entry.id));
     lines.push(Line::from(""));
     lines.extend(doc_lines(&journey_path));
+    lines.extend(readme_lines(&journey_path));
     lines
 }
 
@@ -1082,6 +1063,292 @@ fn doc_lines(journey_path: &Path) -> Vec<Line<'static>> {
         )));
     }
     lines
+}
+
+fn readme_lines(journey_path: &Path) -> Vec<Line<'static>> {
+    let path = journey_path.join(storage::README_FILE);
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("README.md:", dim())),
+    ];
+    match fs::read_to_string(&path) {
+        Ok(content) if content.trim().is_empty() => {
+            lines.push(Line::from(Span::styled("(empty)", dim())));
+        }
+        Ok(content) => {
+            lines.extend(render_markdown_lines(&content));
+        }
+        Err(err) => {
+            lines.push(Line::from(Span::styled(
+                format!("unavailable: {err}"),
+                dim(),
+            )));
+        }
+    }
+    lines
+}
+
+fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {
+    let mut renderer = MarkdownRenderer::default();
+    let parser = Parser::new_ext(
+        content,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES,
+    );
+
+    for event in parser {
+        renderer.handle(event);
+    }
+
+    renderer.finish()
+}
+
+#[derive(Default)]
+struct MarkdownRenderer {
+    lines: Vec<Line<'static>>,
+    current: Vec<Span<'static>>,
+    style_stack: Vec<Style>,
+    list_stack: Vec<ListMarker>,
+    current_item_prefix: Option<String>,
+    blockquote_depth: usize,
+    code_block: bool,
+    pending_link_destinations: Vec<String>,
+}
+
+impl MarkdownRenderer {
+    fn handle(&mut self, event: MarkdownEvent<'_>) {
+        match event {
+            MarkdownEvent::Start(tag) => self.start_tag(tag),
+            MarkdownEvent::End(tag) => self.end_tag(tag),
+            MarkdownEvent::Text(text)
+            | MarkdownEvent::Html(text)
+            | MarkdownEvent::InlineHtml(text) => {
+                self.push_text(text.as_ref());
+            }
+            MarkdownEvent::Code(code) | MarkdownEvent::InlineMath(code) => {
+                self.push_span(Span::styled(code.to_string(), inline_code()));
+            }
+            MarkdownEvent::DisplayMath(math) => {
+                self.flush_current();
+                self.push_span(Span::styled(format!("    {math}"), code_block_style()));
+                self.flush_current();
+            }
+            MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => self.flush_current(),
+            MarkdownEvent::Rule => {
+                self.flush_current();
+                self.lines
+                    .push(Line::from(Span::styled("----------------", dim())));
+            }
+            MarkdownEvent::TaskListMarker(checked) => {
+                let marker = if checked { "[x] " } else { "[ ] " };
+                self.push_span(Span::styled(marker, dim()));
+            }
+            MarkdownEvent::FootnoteReference(reference) => {
+                self.push_span(Span::styled(format!("[{reference}]"), dim()));
+            }
+        }
+    }
+
+    fn start_tag(&mut self, tag: Tag<'_>) {
+        match tag {
+            Tag::Paragraph => {}
+            Tag::Heading { level, .. } => {
+                self.flush_current();
+                self.push_style(heading_style(level));
+            }
+            Tag::BlockQuote(_) => {
+                self.flush_current();
+                self.blockquote_depth += 1;
+                self.push_style(blockquote_style());
+            }
+            Tag::CodeBlock(kind) => {
+                self.flush_current();
+                self.code_block = true;
+                if let CodeBlockKind::Fenced(language) = kind {
+                    if !language.is_empty() {
+                        self.lines.push(Line::from(vec![
+                            Span::styled("code", dim()),
+                            Span::styled(format!(" {language}"), dim()),
+                        ]));
+                    }
+                }
+            }
+            Tag::List(start) => self.list_stack.push(ListMarker::new(start)),
+            Tag::Item => self.start_list_item(),
+            Tag::Emphasis => self.push_style(self.current_style().add_modifier(Modifier::ITALIC)),
+            Tag::Strong => self.push_style(self.current_style().add_modifier(Modifier::BOLD)),
+            Tag::Strikethrough => {
+                self.push_style(self.current_style().add_modifier(Modifier::CROSSED_OUT));
+            }
+            Tag::Link { dest_url, .. } => {
+                self.pending_link_destinations.push(dest_url.to_string());
+                self.push_style(accent().add_modifier(Modifier::UNDERLINED));
+            }
+            Tag::Image {
+                dest_url, title, ..
+            } => {
+                let label = if title.is_empty() {
+                    dest_url.to_string()
+                } else {
+                    format!("{title} ({dest_url})")
+                };
+                self.push_span(Span::styled(format!("[image: {label}]"), dim()));
+                self.push_style(dim());
+            }
+            Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => {}
+            Tag::FootnoteDefinition(name) => {
+                self.flush_current();
+                self.push_span(Span::styled(format!("[{name}] "), dim()));
+            }
+            _ => {}
+        }
+    }
+
+    fn end_tag(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Paragraph
+            | TagEnd::FootnoteDefinition
+            | TagEnd::Table
+            | TagEnd::TableHead
+            | TagEnd::TableRow
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
+            | TagEnd::MetadataBlock(_) => self.flush_current(),
+            TagEnd::Heading(_) => {
+                self.flush_current();
+                self.pop_style();
+            }
+            TagEnd::BlockQuote(_) => {
+                self.flush_current();
+                self.blockquote_depth = self.blockquote_depth.saturating_sub(1);
+                self.pop_style();
+            }
+            TagEnd::CodeBlock => {
+                self.flush_current();
+                self.code_block = false;
+            }
+            TagEnd::List(_) => {
+                self.list_stack.pop();
+            }
+            TagEnd::Item => {
+                self.flush_current();
+                self.current_item_prefix = None;
+            }
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.pop_style(),
+            TagEnd::Link => {
+                self.pop_style();
+                if let Some(destination) = self.pending_link_destinations.pop() {
+                    if !destination.is_empty() {
+                        self.push_span(Span::styled(format!(" ({destination})"), dim()));
+                    }
+                }
+            }
+            TagEnd::Image => self.pop_style(),
+            TagEnd::HtmlBlock | TagEnd::TableCell => {}
+        }
+    }
+
+    fn start_list_item(&mut self) {
+        self.flush_current();
+        let depth = self.list_stack.len().saturating_sub(1);
+        let indent = "  ".repeat(depth);
+        let marker = self
+            .list_stack
+            .last_mut()
+            .map(ListMarker::next)
+            .unwrap_or_else(|| "- ".to_string());
+        self.current_item_prefix = Some(format!("{indent}{marker}"));
+    }
+
+    fn push_text(&mut self, text: &str) {
+        if self.code_block {
+            for (idx, line) in text.split('\n').enumerate() {
+                if idx > 0 {
+                    self.flush_current();
+                }
+                if !line.is_empty() {
+                    self.push_span(Span::styled(format!("    {line}"), code_block_style()));
+                }
+            }
+            return;
+        }
+
+        for (idx, part) in text.split('\n').enumerate() {
+            if idx > 0 {
+                self.flush_current();
+            }
+            if !part.is_empty() {
+                self.push_span(Span::styled(part.to_string(), self.current_style()));
+            }
+        }
+    }
+
+    fn push_span(&mut self, span: Span<'static>) {
+        if self.current.is_empty() {
+            self.push_prefix();
+        }
+        self.current.push(span);
+    }
+
+    fn push_prefix(&mut self) {
+        for _ in 0..self.blockquote_depth {
+            self.current.push(Span::styled("> ", dim()));
+        }
+        if let Some(prefix) = &self.current_item_prefix {
+            self.current.push(Span::styled(prefix.clone(), dim()));
+        }
+    }
+
+    fn flush_current(&mut self) {
+        if !self.current.is_empty() {
+            self.lines
+                .push(Line::from(std::mem::take(&mut self.current)));
+        }
+    }
+
+    fn finish(mut self) -> Vec<Line<'static>> {
+        self.flush_current();
+        self.lines
+    }
+
+    fn current_style(&self) -> Style {
+        self.style_stack
+            .last()
+            .copied()
+            .unwrap_or_else(Style::default)
+    }
+
+    fn push_style(&mut self, style: Style) {
+        self.style_stack.push(style);
+    }
+
+    fn pop_style(&mut self) {
+        self.style_stack.pop();
+    }
+}
+
+struct ListMarker {
+    next: Option<u64>,
+}
+
+impl ListMarker {
+    fn new(next: Option<u64>) -> Self {
+        Self { next }
+    }
+
+    fn next(&mut self) -> String {
+        match self.next {
+            Some(value) => {
+                self.next = Some(value + 1);
+                format!("{value}. ")
+            }
+            None => "- ".to_string(),
+        }
+    }
 }
 
 fn label_value(label: &str, value: String) -> Line<'static> {
@@ -1166,12 +1433,43 @@ fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
+fn heading_style(level: HeadingLevel) -> Style {
+    let style = accent().add_modifier(Modifier::BOLD);
+    match level {
+        HeadingLevel::H1 | HeadingLevel::H2 => style.add_modifier(Modifier::UNDERLINED),
+        _ => style,
+    }
+}
+
+fn blockquote_style() -> Style {
+    dim().add_modifier(Modifier::ITALIC)
+}
+
+fn inline_code() -> Style {
+    Style::default().fg(Color::Yellow)
+}
+
+fn code_block_style() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
 fn accent() -> Style {
     Style::default().fg(ACCENT)
 }
 
 fn selected() -> Style {
     Style::default().fg(ACCENT_TEXT).bg(ACCENT)
+}
+
+fn selected_row() -> Style {
+    Style::default().add_modifier(Modifier::BOLD)
+}
+
+fn selection_stroke() -> Text<'static> {
+    Text::from(Line::from(vec![
+        Span::styled("|", accent()),
+        Span::raw(" "),
+    ]))
 }
 
 fn status_style(status: JourneyStatus) -> Style {
@@ -1198,8 +1496,6 @@ enum JourneyAction {
     Worktree,
     Link,
     Unlink,
-    Status,
-    Path,
     Pause,
     Archive,
     Abandon,
@@ -1213,8 +1509,6 @@ impl JourneyAction {
             JourneyAction::Worktree => "New branch + worktree",
             JourneyAction::Link => "Link current worktree",
             JourneyAction::Unlink => "Unlink a repo",
-            JourneyAction::Status => "Status",
-            JourneyAction::Path => "Print Journey path",
             JourneyAction::Pause => "Pause",
             JourneyAction::Archive => "Archive",
             JourneyAction::Abandon => "Abandon",
@@ -1228,8 +1522,6 @@ impl JourneyAction {
             JourneyAction::Worktree => "git worktree add -b",
             JourneyAction::Link => "attach cwd repo",
             JourneyAction::Unlink => "detach linked repo",
-            JourneyAction::Status => "summary modal",
-            JourneyAction::Path => "show folder path",
             JourneyAction::Pause => "lifecycle only",
             JourneyAction::Archive => "release worktrees",
             JourneyAction::Abandon => "release worktrees",
@@ -1298,10 +1590,6 @@ enum Dialog {
         selected: usize,
         state: ListState,
     },
-    Message {
-        title: String,
-        body: String,
-    },
 }
 
 struct Notice {
@@ -1336,4 +1624,31 @@ enum DialogAction {
     SubmitWorktreeBranch,
     SubmitWorktreePath,
     SubmitUnlink,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_readme_markdown_as_terminal_lines() {
+        let lines = render_markdown_lines(
+            "# Overview\n\nA **short** note with [docs](https://example.com).\n\n- first\n- second\n\n```sh\ncargo test\n```",
+        );
+        let text = lines.iter().map(plain_line).collect::<Vec<_>>().join("\n");
+
+        assert!(text.contains("Overview"));
+        assert!(text.contains("A short note with docs (https://example.com)."));
+        assert!(text.contains("- first"));
+        assert!(text.contains("- second"));
+        assert!(text.contains("code sh"));
+        assert!(text.contains("    cargo test"));
+    }
+
+    fn plain_line(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
 }

@@ -15,6 +15,7 @@ pub const WORKTREE_INDEX_FILE: &str = "worktree-index.yaml";
 pub const JOURNEYS_DIR: &str = "journeys";
 pub const JOURNEY_FILE: &str = "journey.yaml";
 pub const JOURNAL_FILE: &str = "journal.jsonl";
+pub const README_FILE: &str = "README.md";
 pub const DOCS_DIR: &str = "docs";
 pub const WORKTREES_DIR: &str = "worktrees";
 pub const AGENTS_FILE: &str = "AGENTS.md";
@@ -27,6 +28,7 @@ You are working inside a Journey — a local context container for an engineerin
 
 - **Config**: `journey.yaml` in this directory — contains id, title, description, status, and linked repos.
 - **Journal**: `journal.jsonl` — append-only operational event log (link/unlink/status changes).
+- **README**: `README.md` — optional user-owned top-level overview shown in Journey's interactive Details pane when present.
 - **Docs**: `docs/` — user-owned Markdown files. You may create new docs here but never overwrite existing ones.
 - **Worktrees**: `worktrees/` — symlinks to attached git worktrees (convenience view, not ownership).
 
@@ -39,6 +41,8 @@ The `journey` CLI manages this folder. Key commands:
 - `journey status` — show this Journey's summary (run from this directory or any linked worktree).
 - `journey link <repo-path>` — attach a git worktree to this Journey.
 - `journey unlink <name>` — detach a worktree.
+- `journey readme new` — create README.md if it does not already exist.
+- `journey readme path` — print the absolute path to README.md.
 - `journey doc new <name>` — create a new doc under `docs/`.
 - `journey doc list` — list existing docs.
 - `journey pause` / `journey resume` — lifecycle transitions.
@@ -48,6 +52,7 @@ The `journey` CLI manages this folder. Key commands:
 
 - **`journey.yaml`**: YAML. Do not edit directly — use CLI commands to change status or link/unlink repos. You may read it freely to understand context.
 - **`journal.jsonl`**: JSON Lines, append-only. Do not write to it directly — the CLI appends events automatically.
+- **`README.md`**: User-owned Markdown. Use it for the Journey's top-level overview. Create it through `journey readme new` when missing; do not overwrite existing content.
 - **`docs/*.md`**: You may create and edit these freely. Use them for investigation notes, plans, decisions, or any documentation relevant to the effort.
 
 ## Context Resolution

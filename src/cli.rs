@@ -52,6 +52,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: DocCommands,
     },
+    /// Manage a Journey README.md.
+    Readme {
+        #[command(subcommand)]
+        command: ReadmeCommands,
+    },
     /// Inspect or repair Journey indexes.
     Doctor {
         /// Rebuild the worktree attachment index from active/paused Journeys.
@@ -95,6 +100,20 @@ pub enum DocCommands {
     /// Print the absolute path to a Journey doc.
     Path {
         name: String,
+        #[arg(long)]
+        journey: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReadmeCommands {
+    /// Create README.md in the Journey folder.
+    New {
+        #[arg(long)]
+        journey: Option<String>,
+    },
+    /// Print the absolute path to README.md.
+    Path {
         #[arg(long)]
         journey: Option<String>,
     },
