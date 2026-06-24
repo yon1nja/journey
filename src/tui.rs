@@ -1,7 +1,9 @@
 use std::fs;
 use std::io::{self, IsTerminal, Stderr, Stdout, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::sync::LazyLock;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -21,6 +23,11 @@ use ratatui::widgets::{
     Table, TableState, Wrap,
 };
 use ratatui::{Frame, Terminal};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{
+    FontStyle as SyntectFontStyle, Style as SyntectStyle, Theme, ThemeSet,
+};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::app;
 use crate::events;
@@ -59,12 +66,15 @@ fn terminal_writer() -> TerminalWriter {
     }
 }
 
-const ACTIONS: [JourneyAction; 8] = [
-    JourneyAction::Cd,
+const ACTIONS: [JourneyAction; 11] = [
+    JourneyAction::CopyCd,
     JourneyAction::Resume,
     JourneyAction::Worktree,
+    JourneyAction::ExistingBranchWorktree,
     JourneyAction::Link,
     JourneyAction::Unlink,
+    JourneyAction::DeleteWorktree,
+    JourneyAction::Done,
     JourneyAction::Pause,
     JourneyAction::Archive,
     JourneyAction::Abandon,
@@ -72,6 +82,10 @@ const ACTIONS: [JourneyAction; 8] = [
 
 const ACCENT: Color = Color::Indexed(75);
 const ACCENT_TEXT: Color = Color::Black;
+const CODE_THEME: &str = "base16-ocean.dark";
+
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 pub(crate) fn run_journey_app(
     home: &Path,
@@ -130,6 +144,7 @@ struct JourneyApp {
     action_state: ListState,
     dialog: Dialog,
     notice: Option<Notice>,
+    readme_cache: ReadmeRenderCache,
     output: Option<String>,
     should_quit: bool,
 }
@@ -150,6 +165,7 @@ impl JourneyApp {
             action_state: ListState::default(),
             dialog: Dialog::None,
             notice: None,
+            readme_cache: ReadmeRenderCache::default(),
             output: None,
             should_quit: false,
         };
@@ -202,6 +218,68 @@ impl JourneyApp {
             Dialog::WorktreePath { input, .. } => {
                 Some(handle_text_input(input, key, DialogKeyTarget::WorktreePath))
             }
+            Dialog::ExistingBranch {
+                selected,
+                branches,
+                query,
+                state,
+                ..
+            } => match key.code {
+                KeyCode::Esc => Some(DialogAction::Cancel),
+                KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                    sync_list_state(
+                        state,
+                        *selected,
+                        branch_filter_indices(branches, query).len(),
+                    );
+                    None
+                }
+                KeyCode::Down => {
+                    let filtered_len = branch_filter_indices(branches, query).len();
+                    if filtered_len > 0 {
+                        *selected = (*selected + 1).min(filtered_len.saturating_sub(1));
+                    }
+                    sync_list_state(state, *selected, filtered_len);
+                    None
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                    *selected = 0;
+                    sync_list_state(
+                        state,
+                        *selected,
+                        branch_filter_indices(branches, query).len(),
+                    );
+                    None
+                }
+                KeyCode::Char(ch) if editable_modifiers(key.modifiers) => {
+                    query.push(ch);
+                    *selected = 0;
+                    sync_list_state(
+                        state,
+                        *selected,
+                        branch_filter_indices(branches, query).len(),
+                    );
+                    None
+                }
+                KeyCode::Enter => Some(DialogAction::SubmitExistingBranch),
+                _ => None,
+            },
+            Dialog::ExistingWorktreePath { input, .. } => Some(handle_text_input(
+                input,
+                key,
+                DialogKeyTarget::ExistingWorktreePath,
+            )),
+            Dialog::ExistingWorktreeLinkConfirm { .. } => match key.code {
+                KeyCode::Esc => Some(DialogAction::Cancel),
+                KeyCode::Char('n') if key.modifiers.is_empty() => Some(DialogAction::Cancel),
+                KeyCode::Char('y') if key.modifiers.is_empty() => {
+                    Some(DialogAction::SubmitExistingWorktreeLink)
+                }
+                KeyCode::Enter => Some(DialogAction::SubmitExistingWorktreeLink),
+                _ => None,
+            },
             Dialog::Unlink {
                 selected,
                 repos,
@@ -222,6 +300,33 @@ impl JourneyApp {
                     None
                 }
                 KeyCode::Enter => Some(DialogAction::SubmitUnlink),
+                _ => None,
+            },
+            Dialog::DeleteWorktree {
+                selected,
+                repos,
+                state,
+                ..
+            } => match key.code {
+                KeyCode::Esc => Some(DialogAction::Cancel),
+                KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                    sync_list_state(state, *selected, repos.len());
+                    None
+                }
+                KeyCode::Down => {
+                    if !repos.is_empty() {
+                        *selected = (*selected + 1).min(repos.len().saturating_sub(1));
+                    }
+                    sync_list_state(state, *selected, repos.len());
+                    None
+                }
+                KeyCode::Enter => Some(DialogAction::SubmitDeleteWorktree),
+                _ => None,
+            },
+            Dialog::DoneConfirm { .. } => match key.code {
+                KeyCode::Esc => Some(DialogAction::Cancel),
+                KeyCode::Enter => Some(DialogAction::SubmitDone),
                 _ => None,
             },
         };
@@ -327,7 +432,14 @@ impl JourneyApp {
             DialogAction::SubmitNewDescription => self.create_journey_from_dialog()?,
             DialogAction::SubmitWorktreeBranch => self.open_worktree_path_dialog(),
             DialogAction::SubmitWorktreePath => self.create_worktree_from_dialog()?,
+            DialogAction::SubmitExistingBranch => self.open_existing_worktree_path_dialog(),
+            DialogAction::SubmitExistingWorktreePath => {
+                self.create_existing_worktree_from_dialog()?
+            }
+            DialogAction::SubmitExistingWorktreeLink => self.link_existing_branch_worktree()?,
             DialogAction::SubmitUnlink => self.unlink_selected_repo()?,
+            DialogAction::SubmitDeleteWorktree => self.delete_selected_worktree()?,
+            DialogAction::SubmitDone => self.done_confirmed()?,
         }
         Ok(())
     }
@@ -380,6 +492,80 @@ impl JourneyApp {
         }
     }
 
+    fn open_existing_branch_dialog(&mut self, journey_id: String) {
+        match git::discover_repo(&self.cwd).and_then(|repo| git::list_branches(&repo.root)) {
+            Ok(branches) => {
+                let mut state = ListState::default();
+                state.select(Some(0));
+                self.dialog = Dialog::ExistingBranch {
+                    journey_id,
+                    branches,
+                    query: String::new(),
+                    selected: 0,
+                    state,
+                };
+            }
+            Err(err) => self.notice_error(format!("cannot list branches: {err}")),
+        }
+    }
+
+    fn open_existing_worktree_path_dialog(&mut self) {
+        let Dialog::ExistingBranch {
+            journey_id,
+            branches,
+            query,
+            selected,
+            ..
+        } = &self.dialog
+        else {
+            return;
+        };
+        let filtered = branch_filter_indices(branches, query);
+        let Some(branch) = filtered
+            .get(*selected)
+            .and_then(|branch_idx| branches.get(*branch_idx))
+            .cloned()
+        else {
+            self.notice_error("no branch selected");
+            return;
+        };
+
+        match git::discover_repo(&self.cwd) {
+            Ok(discovered) => {
+                match git::worktree_for_branch(&discovered.root, &branch) {
+                    Ok(Some(worktree)) => {
+                        self.dialog = Dialog::ExistingWorktreeLinkConfirm {
+                            journey_id: journey_id.clone(),
+                            branch,
+                            worktree,
+                        };
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        self.dialog = Dialog::None;
+                        self.notice_error(format!("cannot inspect worktrees: {err}"));
+                        return;
+                    }
+                }
+
+                let default_path = discovered
+                    .root
+                    .join(format!(".worktrees/{}", storage::slugify(&branch)));
+                self.dialog = Dialog::ExistingWorktreePath {
+                    journey_id: journey_id.clone(),
+                    branch,
+                    input: String::new(),
+                    default_path,
+                };
+            }
+            Err(err) => {
+                self.dialog = Dialog::None;
+                self.notice_error(format!("cannot create worktree: {err}"));
+            }
+        }
+    }
+
     fn create_worktree_from_dialog(&mut self) -> Result<()> {
         let Dialog::WorktreePath {
             journey_id,
@@ -397,7 +583,65 @@ impl JourneyApp {
         } else {
             PathBuf::from(input.trim())
         };
-        let result = create_and_link_worktree(&self.home, &self.cwd, &journey_id, &branch, &path);
+        let result =
+            create_and_link_worktree(&self.home, &self.cwd, &journey_id, &branch, &path, true);
+        self.dialog = Dialog::None;
+        self.record_mutation(result, Some(journey_id))
+    }
+
+    fn create_existing_worktree_from_dialog(&mut self) -> Result<()> {
+        let Dialog::ExistingWorktreePath {
+            journey_id,
+            branch,
+            input,
+            default_path,
+        } = &self.dialog
+        else {
+            return Ok(());
+        };
+        let journey_id = journey_id.clone();
+        let branch = branch.clone();
+        let path = if input.trim().is_empty() {
+            default_path.clone()
+        } else {
+            PathBuf::from(input.trim())
+        };
+        match git::discover_repo(&self.cwd)
+            .and_then(|discovered| git::worktree_for_branch(&discovered.root, &branch))
+        {
+            Ok(Some(worktree)) => {
+                self.dialog = Dialog::ExistingWorktreeLinkConfirm {
+                    journey_id,
+                    branch,
+                    worktree,
+                };
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(err) => {
+                self.dialog = Dialog::None;
+                self.notice_error(format!("cannot inspect worktrees: {err}"));
+                return Ok(());
+            }
+        }
+        let result =
+            create_and_link_worktree(&self.home, &self.cwd, &journey_id, &branch, &path, false);
+        self.dialog = Dialog::None;
+        self.record_mutation(result, Some(journey_id))
+    }
+
+    fn link_existing_branch_worktree(&mut self) -> Result<()> {
+        let Dialog::ExistingWorktreeLinkConfirm {
+            journey_id,
+            worktree,
+            ..
+        } = &self.dialog
+        else {
+            return Ok(());
+        };
+        let journey_id = journey_id.clone();
+        let worktree = worktree.clone();
+        let result = app::link_repo(&self.home, &self.cwd, Some(&journey_id), &worktree, None);
         self.dialog = Dialog::None;
         self.record_mutation(result, Some(journey_id))
     }
@@ -410,18 +654,13 @@ impl JourneyApp {
         let action = ACTIONS[self.action_selected];
 
         match action {
-            JourneyAction::Cd => {
+            JourneyAction::CopyCd => {
                 let dir = storage::journey_dir(&self.home, &journey_id);
-                let output = if app::shell_integration_active() {
-                    format!("{}{}", app::SHELL_CD_PREFIX, dir.display())
-                } else {
-                    format!(
-                        "selected Journey path: {} (enable parent-shell cd with: eval \"$(journey shell-init)\")",
-                        dir.display()
-                    )
-                };
-                self.output = Some(output);
-                self.should_quit = true;
+                let command = cd_command(&dir);
+                match copy_to_clipboard(&command) {
+                    Ok(()) => self.notice_success("copied cd command to clipboard"),
+                    Err(err) => self.notice_error(format!("clipboard failed: {err}")),
+                }
             }
             JourneyAction::Resume => {
                 let result = app::resume(&self.home, &self.cwd, Some(&journey_id));
@@ -435,12 +674,17 @@ impl JourneyApp {
                     default_branch,
                 };
             }
+            JourneyAction::ExistingBranchWorktree => {
+                self.open_existing_branch_dialog(journey_id);
+            }
             JourneyAction::Link => {
                 let result =
                     app::link_repo(&self.home, &self.cwd, Some(&journey_id), &self.cwd, None);
                 let _ = self.record_mutation(result, Some(journey_id));
             }
             JourneyAction::Unlink => self.open_unlink_dialog(&journey_id),
+            JourneyAction::DeleteWorktree => self.open_delete_worktree_dialog(&journey_id),
+            JourneyAction::Done => self.open_done_dialog(&journey_id),
             JourneyAction::Pause => {
                 let result = app::set_status(
                     &self.home,
@@ -505,6 +749,66 @@ impl JourneyApp {
         let journey_id = journey_id.clone();
         let repo_name = repo.name.clone();
         let result = app::unlink_repo(&self.home, &self.cwd, Some(&journey_id), &repo_name);
+        self.dialog = Dialog::None;
+        self.record_mutation(result, Some(journey_id))
+    }
+
+    fn open_delete_worktree_dialog(&mut self, journey_id: &str) {
+        match storage::resolve_context(&self.home, Some(journey_id), &self.cwd) {
+            Ok(ctx) if ctx.journey.repos.is_empty() => self.notice_error("no worktrees linked"),
+            Ok(ctx) => {
+                let mut state = ListState::default();
+                state.select(Some(0));
+                self.dialog = Dialog::DeleteWorktree {
+                    journey_id: journey_id.to_string(),
+                    repos: ctx.journey.repos,
+                    selected: 0,
+                    state,
+                };
+            }
+            Err(err) => self.notice_error(err.to_string()),
+        }
+    }
+
+    fn delete_selected_worktree(&mut self) -> Result<()> {
+        let Dialog::DeleteWorktree {
+            journey_id,
+            repos,
+            selected,
+            ..
+        } = &self.dialog
+        else {
+            return Ok(());
+        };
+        let Some(repo) = repos.get(*selected) else {
+            self.notice_error("no worktree selected");
+            return Ok(());
+        };
+        let journey_id = journey_id.clone();
+        let repo_name = repo.name.clone();
+        let result = app::delete_worktree(&self.home, &self.cwd, Some(&journey_id), &repo_name);
+        self.dialog = Dialog::None;
+        self.record_mutation(result, Some(journey_id))
+    }
+
+    fn open_done_dialog(&mut self, journey_id: &str) {
+        match storage::resolve_context(&self.home, Some(journey_id), &self.cwd) {
+            Ok(ctx) => {
+                self.dialog = Dialog::DoneConfirm {
+                    journey_id: journey_id.to_string(),
+                    repo_count: ctx.journey.repos.len(),
+                };
+            }
+            Err(err) => self.notice_error(err.to_string()),
+        }
+    }
+
+    fn done_confirmed(&mut self) -> Result<()> {
+        let Dialog::DoneConfirm { journey_id, .. } = &self.dialog else {
+            return Ok(());
+        };
+        let journey_id = journey_id.clone();
+        let result = app::done(&self.home, &self.cwd, Some(&journey_id));
         self.dialog = Dialog::None;
         self.record_mutation(result, Some(journey_id))
     }
@@ -888,33 +1192,238 @@ fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
             input,
             "Enter create  Esc cancel",
         ),
+        Dialog::ExistingBranch {
+            branches,
+            query,
+            selected,
+            state,
+            ..
+        } => render_branch_selection_dialog(frame, area, branches, query, *selected, state),
+        Dialog::ExistingWorktreePath {
+            input,
+            default_path,
+            ..
+        } => render_input_dialog(
+            frame,
+            area,
+            "Existing Branch + Worktree",
+            &format!("Path (default: {})", default_path.display()),
+            input,
+            "Enter create  Esc cancel",
+        ),
+        Dialog::ExistingWorktreeLinkConfirm {
+            branch, worktree, ..
+        } => render_confirm_dialog(
+            frame,
+            area,
+            " Link Existing Worktree ",
+            vec![
+                Line::from(Span::styled(
+                    "A worktree for this branch already exists at:",
+                    dim(),
+                )),
+                Line::from(Span::styled(worktree.display().to_string(), accent())),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("Branch: "),
+                    Span::styled(branch.clone(), Style::default().fg(Color::White)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Would you like to link this worktree instead of creating a new one?",
+                    dim(),
+                )),
+                Line::from(Span::styled("Enter/y link  n/Esc cancel", dim())),
+            ],
+        ),
         Dialog::Unlink { repos, state, .. } => {
-            let area = centered_rect(68, 60, area);
-            frame.render_widget(Clear, area);
-            let items = repos
-                .iter()
-                .map(|repo| {
-                    ListItem::new(vec![
-                        Line::from(Span::styled(
-                            repo.name.clone(),
-                            Style::default().fg(Color::White),
-                        )),
-                        Line::from(Span::styled(repo.worktree.display().to_string(), dim())),
-                    ])
-                })
-                .collect::<Vec<_>>();
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .title(" Unlink Repo ")
-                        .borders(Borders::ALL)
-                        .border_style(accent()),
-                )
-                .highlight_style(Style::default().fg(Color::Black).bg(Color::Red))
-                .highlight_symbol("> ");
-            frame.render_stateful_widget(list, area, state);
+            render_repo_selection_dialog(frame, area, " Unlink Repo ", repos, state);
         }
+        Dialog::DeleteWorktree { repos, state, .. } => {
+            render_repo_selection_dialog(frame, area, " Delete Worktree ", repos, state);
+        }
+        Dialog::DoneConfirm {
+            journey_id,
+            repo_count,
+        } => render_confirm_dialog(
+            frame,
+            area,
+            " Done ",
+            vec![
+                Line::from(vec![
+                    Span::raw("Archive "),
+                    Span::styled(journey_id.clone(), accent()),
+                    Span::raw(format!(" and remove {repo_count} worktrees?")),
+                ]),
+                Line::from(Span::styled(
+                    "Git will refuse dirty or main worktrees.",
+                    dim(),
+                )),
+                Line::from(""),
+                Line::from(Span::styled("Enter confirm  Esc cancel", dim())),
+            ],
+        ),
     }
+}
+
+fn render_branch_selection_dialog(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    branches: &[String],
+    query: &str,
+    selected_index: usize,
+    state: &mut ListState,
+) {
+    let area = centered_rect(74, 72, area);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Existing Branch + Worktree ")
+        .borders(Borders::ALL)
+        .border_style(accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+
+    let query_line = if query.is_empty() {
+        Line::from(" ")
+    } else {
+        Line::from(Span::styled(
+            query.to_string(),
+            Style::default().fg(Color::White),
+        ))
+    };
+    frame.render_widget(
+        Paragraph::new(query_line).block(
+            Block::default()
+                .title(" Filter ")
+                .borders(Borders::ALL)
+                .border_style(dim()),
+        ),
+        chunks[0],
+    );
+
+    let filtered = branch_filter_indices(branches, query);
+    let items = if filtered.is_empty() {
+        state.select(None);
+        vec![ListItem::new(Line::from(Span::styled(
+            "No matching branches",
+            dim(),
+        )))]
+    } else {
+        sync_list_state(state, selected_index, filtered.len());
+        filtered
+            .iter()
+            .map(|branch_idx| {
+                let branch = &branches[*branch_idx];
+                ListItem::new(Line::from(Span::styled(
+                    branch.clone(),
+                    Style::default().fg(Color::White),
+                )))
+            })
+            .collect::<Vec<_>>()
+    };
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(format!(" Branches {}/{} ", filtered.len(), branches.len()))
+                .borders(Borders::ALL)
+                .border_style(dim()),
+        )
+        .highlight_style(selected())
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, chunks[1], state);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Enter select  Backspace edit  Esc cancel",
+            dim(),
+        ))),
+        chunks[2],
+    );
+}
+
+fn branch_filter_indices(branches: &[String], query: &str) -> Vec<usize> {
+    let terms = query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return (0..branches.len()).collect();
+    }
+
+    branches
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, branch)| {
+            let branch = branch.to_lowercase();
+            terms
+                .iter()
+                .all(|term| branch.contains(term))
+                .then_some(idx)
+        })
+        .collect()
+}
+
+fn render_repo_selection_dialog(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    repos: &[RepoRef],
+    state: &mut ListState,
+) {
+    let area = centered_rect(68, 60, area);
+    frame.render_widget(Clear, area);
+    let items = repos
+        .iter()
+        .map(|repo| {
+            ListItem::new(vec![
+                Line::from(Span::styled(
+                    repo.name.clone(),
+                    Style::default().fg(Color::White),
+                )),
+                Line::from(Span::styled(repo.worktree.display().to_string(), dim())),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(accent()),
+        )
+        .highlight_style(Style::default().fg(Color::Black).bg(Color::Red))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, area, state);
+}
+
+fn render_confirm_dialog(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'static>>,
+) {
+    let area = centered_rect(64, 32, area);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_input_dialog(
@@ -953,7 +1462,7 @@ fn render_input_dialog(
     );
 }
 
-fn detail_lines(app: &JourneyApp) -> Vec<Line<'static>> {
+fn detail_lines(app: &mut JourneyApp) -> Vec<Line<'static>> {
     let Some(entry) = app.selected_entry() else {
         return vec![
             Line::from(Span::styled("No Journeys", accent())),
@@ -987,7 +1496,7 @@ fn detail_lines(app: &JourneyApp) -> Vec<Line<'static>> {
     lines.extend(repo_lines(&app.home, &entry.id));
     lines.push(Line::from(""));
     lines.extend(doc_lines(&journey_path));
-    lines.extend(readme_lines(&journey_path));
+    lines.extend(readme_lines(&journey_path, &mut app.readme_cache));
     lines
 }
 
@@ -1065,9 +1574,12 @@ fn doc_lines(journey_path: &Path) -> Vec<Line<'static>> {
     lines
 }
 
-fn readme_lines(journey_path: &Path) -> Vec<Line<'static>> {
+fn readme_lines(journey_path: &Path, readme_cache: &mut ReadmeRenderCache) -> Vec<Line<'static>> {
     let path = journey_path.join(storage::README_FILE);
-    if !path.exists() {
+    let Ok(metadata) = fs::metadata(&path) else {
+        return Vec::new();
+    };
+    if !metadata.is_file() {
         return Vec::new();
     }
 
@@ -1075,21 +1587,51 @@ fn readme_lines(journey_path: &Path) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled("README.md:", dim())),
     ];
-    match fs::read_to_string(&path) {
-        Ok(content) if content.trim().is_empty() => {
-            lines.push(Line::from(Span::styled("(empty)", dim())));
-        }
-        Ok(content) => {
-            lines.extend(render_markdown_lines(&content));
-        }
-        Err(err) => {
-            lines.push(Line::from(Span::styled(
-                format!("unavailable: {err}"),
-                dim(),
-            )));
-        }
-    }
+    lines.extend(readme_cache.lines(&path, &metadata));
     lines
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ReadmeCacheKey {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+#[derive(Default)]
+struct ReadmeRenderCache {
+    key: Option<ReadmeCacheKey>,
+    lines: Vec<Line<'static>>,
+}
+
+impl ReadmeRenderCache {
+    fn lines(&mut self, path: &Path, metadata: &fs::Metadata) -> Vec<Line<'static>> {
+        let key = ReadmeCacheKey {
+            path: path.to_path_buf(),
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        };
+
+        if self.key.as_ref() != Some(&key) {
+            self.lines = render_readme_file(path);
+            self.key = Some(key);
+        }
+
+        self.lines.clone()
+    }
+}
+
+fn render_readme_file(path: &Path) -> Vec<Line<'static>> {
+    match fs::read_to_string(path) {
+        Ok(content) if content.trim().is_empty() => {
+            vec![Line::from(Span::styled("(empty)", dim()))]
+        }
+        Ok(content) => render_markdown_lines(&content),
+        Err(err) => vec![Line::from(Span::styled(
+            format!("unavailable: {err}"),
+            dim(),
+        ))],
+    }
 }
 
 fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {
@@ -1099,11 +1641,22 @@ fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES,
     );
 
-    for event in parser {
+    for (event, range) in parser.into_offset_iter() {
+        renderer.preserve_source_gap(content, range.start);
         renderer.handle(event);
+        renderer.mark_source_end(range.end);
     }
 
+    renderer.preserve_source_gap(content, content.len());
     renderer.finish()
+}
+
+fn source_blank_lines(gap: &str) -> usize {
+    if !gap.trim().is_empty() {
+        return 0;
+    }
+
+    gap.bytes().filter(|byte| *byte == b'\n').count()
 }
 
 #[derive(Default)]
@@ -1114,8 +1667,9 @@ struct MarkdownRenderer {
     list_stack: Vec<ListMarker>,
     current_item_prefix: Option<String>,
     blockquote_depth: usize,
-    code_block: bool,
+    code_block: Option<MarkdownCodeBlock>,
     pending_link_destinations: Vec<String>,
+    source_offset: usize,
 }
 
 impl MarkdownRenderer {
@@ -1152,6 +1706,27 @@ impl MarkdownRenderer {
         }
     }
 
+    fn preserve_source_gap(&mut self, source: &str, next_start: usize) {
+        if self.code_block.is_some() || next_start <= self.source_offset {
+            return;
+        }
+
+        let gap = &source[self.source_offset..next_start];
+        let blank_lines = source_blank_lines(gap);
+        if blank_lines == 0 {
+            return;
+        }
+
+        self.flush_current();
+        for _ in 0..blank_lines {
+            self.lines.push(Line::from(""));
+        }
+    }
+
+    fn mark_source_end(&mut self, end: usize) {
+        self.source_offset = self.source_offset.max(end);
+    }
+
     fn start_tag(&mut self, tag: Tag<'_>) {
         match tag {
             Tag::Paragraph => {}
@@ -1166,15 +1741,7 @@ impl MarkdownRenderer {
             }
             Tag::CodeBlock(kind) => {
                 self.flush_current();
-                self.code_block = true;
-                if let CodeBlockKind::Fenced(language) = kind {
-                    if !language.is_empty() {
-                        self.lines.push(Line::from(vec![
-                            Span::styled("code", dim()),
-                            Span::styled(format!(" {language}"), dim()),
-                        ]));
-                    }
-                }
+                self.code_block = Some(MarkdownCodeBlock::new(kind));
             }
             Tag::List(start) => self.list_stack.push(ListMarker::new(start)),
             Tag::Item => self.start_list_item(),
@@ -1229,7 +1796,9 @@ impl MarkdownRenderer {
             }
             TagEnd::CodeBlock => {
                 self.flush_current();
-                self.code_block = false;
+                if let Some(block) = self.code_block.take() {
+                    self.push_code_block(block);
+                }
             }
             TagEnd::List(_) => {
                 self.list_stack.pop();
@@ -1265,15 +1834,8 @@ impl MarkdownRenderer {
     }
 
     fn push_text(&mut self, text: &str) {
-        if self.code_block {
-            for (idx, line) in text.split('\n').enumerate() {
-                if idx > 0 {
-                    self.flush_current();
-                }
-                if !line.is_empty() {
-                    self.push_span(Span::styled(format!("    {line}"), code_block_style()));
-                }
-            }
+        if let Some(block) = &mut self.code_block {
+            block.content.push_str(text);
             return;
         }
 
@@ -1295,12 +1857,37 @@ impl MarkdownRenderer {
     }
 
     fn push_prefix(&mut self) {
+        self.current.extend(self.prefix_spans());
+    }
+
+    fn prefix_spans(&self) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
         for _ in 0..self.blockquote_depth {
-            self.current.push(Span::styled("> ", dim()));
+            spans.push(Span::styled("> ", dim()));
         }
         if let Some(prefix) = &self.current_item_prefix {
-            self.current.push(Span::styled(prefix.clone(), dim()));
+            spans.push(Span::styled(prefix.clone(), dim()));
         }
+        spans
+    }
+
+    fn push_code_block(&mut self, block: MarkdownCodeBlock) {
+        if let Some(language) = block.language.as_deref() {
+            self.push_line_with_prefix(vec![
+                Span::styled("code", dim()),
+                Span::styled(format!(" {language}"), dim()),
+            ]);
+        }
+
+        for spans in highlight_code_lines(&block.content, block.language.as_deref()) {
+            self.push_line_with_prefix(spans);
+        }
+    }
+
+    fn push_line_with_prefix(&mut self, spans: Vec<Span<'static>>) {
+        let mut line = self.prefix_spans();
+        line.extend(spans);
+        self.lines.push(Line::from(line));
     }
 
     fn flush_current(&mut self) {
@@ -1329,6 +1916,131 @@ impl MarkdownRenderer {
     fn pop_style(&mut self) {
         self.style_stack.pop();
     }
+}
+
+struct MarkdownCodeBlock {
+    language: Option<String>,
+    content: String,
+}
+
+impl MarkdownCodeBlock {
+    fn new(kind: CodeBlockKind<'_>) -> Self {
+        let language = match kind {
+            CodeBlockKind::Fenced(info) => parse_code_language(info.as_ref()),
+            CodeBlockKind::Indented => None,
+        };
+        Self {
+            language,
+            content: String::new(),
+        }
+    }
+}
+
+fn parse_code_language(info: &str) -> Option<String> {
+    let token = info
+        .split_whitespace()
+        .next()?
+        .trim_matches(|ch| ch == '{' || ch == '}' || ch == '.');
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
+fn highlight_code_lines(code: &str, language: Option<&str>) -> Vec<Vec<Span<'static>>> {
+    let Some(language) = language else {
+        return plain_code_lines(code);
+    };
+    let Some(syntax) = syntax_for_language(language) else {
+        return plain_code_lines(code);
+    };
+    let Some(theme) = code_theme() else {
+        return plain_code_lines(code);
+    };
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    code.lines()
+        .map(|line| {
+            let mut spans = vec![Span::styled("    ", code_block_style())];
+            match highlighter.highlight_line(line, &SYNTAX_SET) {
+                Ok(ranges) => {
+                    for (style, text) in ranges {
+                        if !text.is_empty() {
+                            spans.push(Span::styled(text.to_string(), syntax_style(style)));
+                        }
+                    }
+                }
+                Err(_) => spans.push(Span::styled(line.to_string(), code_block_style())),
+            }
+            spans
+        })
+        .collect()
+}
+
+fn plain_code_lines(code: &str) -> Vec<Vec<Span<'static>>> {
+    code.lines()
+        .map(|line| vec![Span::styled(format!("    {line}"), code_block_style())])
+        .collect()
+}
+
+fn syntax_for_language(language: &str) -> Option<&'static SyntaxReference> {
+    let syntax_set = &*SYNTAX_SET;
+    for candidate in language_candidates(language) {
+        if let Some(syntax) = syntax_set
+            .find_syntax_by_token(&candidate)
+            .or_else(|| syntax_set.find_syntax_by_extension(&candidate))
+        {
+            return Some(syntax);
+        }
+    }
+    None
+}
+
+fn language_candidates(language: &str) -> Vec<String> {
+    let token = language.trim().trim_start_matches('.').to_ascii_lowercase();
+    let alias = match token.as_str() {
+        "rs" => Some("rust"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "ts" | "tsx" => Some("typescript"),
+        "sh" | "zsh" | "shell" => Some("bash"),
+        "yml" => Some("yaml"),
+        "md" => Some("markdown"),
+        "rb" => Some("ruby"),
+        "py" => Some("python"),
+        _ => None,
+    };
+
+    let mut candidates = vec![token];
+    if let Some(alias) = alias {
+        candidates.push(alias.to_string());
+    }
+    candidates
+}
+
+fn code_theme() -> Option<&'static Theme> {
+    THEME_SET
+        .themes
+        .get(CODE_THEME)
+        .or_else(|| THEME_SET.themes.values().next())
+}
+
+fn syntax_style(style: SyntectStyle) -> Style {
+    let mut result = Style::default().fg(Color::Rgb(
+        style.foreground.r,
+        style.foreground.g,
+        style.foreground.b,
+    ));
+    if style.font_style.contains(SyntectFontStyle::BOLD) {
+        result = result.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(SyntectFontStyle::ITALIC) {
+        result = result.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.contains(SyntectFontStyle::UNDERLINE) {
+        result = result.add_modifier(Modifier::UNDERLINED);
+    }
+    result
 }
 
 struct ListMarker {
@@ -1413,20 +2125,95 @@ fn create_and_link_worktree(
     journey_id: &str,
     branch: &str,
     path: &Path,
+    create_branch: bool,
 ) -> Result<String> {
     let discovered = git::discover_repo(cwd)?;
-    git::create_worktree(&discovered.root, path, branch, true)?;
+    git::create_worktree(&discovered.root, path, branch, create_branch)?;
     let repo_name = path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "worktree".to_string());
     let linked = app::link_repo(home, cwd, Some(journey_id), path, Some(repo_name))?;
+    let action = if create_branch {
+        "created worktree"
+    } else {
+        "checked out worktree"
+    };
     Ok(format!(
-        "created worktree {} on branch `{}`\n{}",
+        "{action} {} on branch `{}`\n{}",
         path.display(),
         branch,
         linked
     ))
+}
+
+fn cd_command(path: &Path) -> String {
+    format!("cd -- {}", app::shell_quote(path))
+}
+
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    let mut last_error = None;
+    for mut command in clipboard_commands() {
+        match run_clipboard_command(&mut command, text) {
+            Ok(()) => return Ok(()),
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no clipboard command is available")))
+}
+
+fn clipboard_commands() -> Vec<Command> {
+    let mut commands = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        commands.push(Command::new("pbcopy"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        commands.push(Command::new("clip"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        commands.push(Command::new("wl-copy"));
+
+        let mut xclip = Command::new("xclip");
+        xclip.args(["-selection", "clipboard"]);
+        commands.push(xclip);
+
+        let mut xsel = Command::new("xsel");
+        xsel.args(["--clipboard", "--input"]);
+        commands.push(xsel);
+    }
+
+    commands
+}
+
+fn run_clipboard_command(command: &mut Command, text: &str) -> Result<()> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start clipboard command")?;
+    let Some(mut stdin) = child.stdin.take() else {
+        anyhow::bail!("clipboard command did not open stdin");
+    };
+    stdin
+        .write_all(text.as_bytes())
+        .context("failed to write clipboard text")?;
+    drop(stdin);
+
+    let status = child
+        .wait()
+        .context("failed to wait for clipboard command")?;
+    if !status.success() {
+        anyhow::bail!("clipboard command exited with {status}");
+    }
+    Ok(())
 }
 
 fn dim() -> Style {
@@ -1491,11 +2278,14 @@ enum Focus {
 
 #[derive(Clone, Copy)]
 enum JourneyAction {
-    Cd,
+    CopyCd,
     Resume,
     Worktree,
+    ExistingBranchWorktree,
     Link,
     Unlink,
+    DeleteWorktree,
+    Done,
     Pause,
     Archive,
     Abandon,
@@ -1504,11 +2294,14 @@ enum JourneyAction {
 impl JourneyAction {
     fn label(self) -> &'static str {
         match self {
-            JourneyAction::Cd => "cd journey",
+            JourneyAction::CopyCd => "Copy cd",
             JourneyAction::Resume => "Resume",
             JourneyAction::Worktree => "New branch + worktree",
+            JourneyAction::ExistingBranchWorktree => "Existing branch + worktree",
             JourneyAction::Link => "Link current worktree",
             JourneyAction::Unlink => "Unlink a repo",
+            JourneyAction::DeleteWorktree => "Delete worktree",
+            JourneyAction::Done => "Done",
             JourneyAction::Pause => "Pause",
             JourneyAction::Archive => "Archive",
             JourneyAction::Abandon => "Abandon",
@@ -1517,11 +2310,14 @@ impl JourneyAction {
 
     fn description(self) -> &'static str {
         match self {
-            JourneyAction::Cd => "shell integration aware",
+            JourneyAction::CopyCd => "copy cd command",
             JourneyAction::Resume => "mark active",
             JourneyAction::Worktree => "git worktree add -b",
+            JourneyAction::ExistingBranchWorktree => "select branch",
             JourneyAction::Link => "attach cwd repo",
             JourneyAction::Unlink => "detach linked repo",
+            JourneyAction::DeleteWorktree => "git remove + unlink",
+            JourneyAction::Done => "archive + remove worktrees",
             JourneyAction::Pause => "lifecycle only",
             JourneyAction::Archive => "release worktrees",
             JourneyAction::Abandon => "release worktrees",
@@ -1584,11 +2380,39 @@ enum Dialog {
         input: String,
         default_path: PathBuf,
     },
+    ExistingBranch {
+        journey_id: String,
+        branches: Vec<String>,
+        query: String,
+        selected: usize,
+        state: ListState,
+    },
+    ExistingWorktreePath {
+        journey_id: String,
+        branch: String,
+        input: String,
+        default_path: PathBuf,
+    },
+    ExistingWorktreeLinkConfirm {
+        journey_id: String,
+        branch: String,
+        worktree: PathBuf,
+    },
     Unlink {
         journey_id: String,
         repos: Vec<RepoRef>,
         selected: usize,
         state: ListState,
+    },
+    DeleteWorktree {
+        journey_id: String,
+        repos: Vec<RepoRef>,
+        selected: usize,
+        state: ListState,
+    },
+    DoneConfirm {
+        journey_id: String,
+        repo_count: usize,
     },
 }
 
@@ -1603,6 +2427,7 @@ enum DialogKeyTarget {
     NewDescription,
     WorktreeBranch,
     WorktreePath,
+    ExistingWorktreePath,
 }
 
 impl DialogKeyTarget {
@@ -1612,6 +2437,7 @@ impl DialogKeyTarget {
             DialogKeyTarget::NewDescription => DialogAction::SubmitNewDescription,
             DialogKeyTarget::WorktreeBranch => DialogAction::SubmitWorktreeBranch,
             DialogKeyTarget::WorktreePath => DialogAction::SubmitWorktreePath,
+            DialogKeyTarget::ExistingWorktreePath => DialogAction::SubmitExistingWorktreePath,
         }
     }
 }
@@ -1623,7 +2449,12 @@ enum DialogAction {
     SubmitNewDescription,
     SubmitWorktreeBranch,
     SubmitWorktreePath,
+    SubmitExistingBranch,
+    SubmitExistingWorktreePath,
+    SubmitExistingWorktreeLink,
     SubmitUnlink,
+    SubmitDeleteWorktree,
+    SubmitDone,
 }
 
 #[cfg(test)]
@@ -1643,6 +2474,58 @@ mod tests {
         assert!(text.contains("- second"));
         assert!(text.contains("code sh"));
         assert!(text.contains("    cargo test"));
+    }
+
+    #[test]
+    fn renders_fenced_code_with_syntax_coloring() {
+        let lines = render_markdown_lines("```rust\nfn main() {}\n```");
+        let code_line = lines
+            .iter()
+            .find(|line| plain_line(line).contains("fn main"))
+            .expect("rendered Rust code line");
+
+        assert!(code_line
+            .spans
+            .iter()
+            .any(|span| matches!(span.style.fg, Some(Color::Rgb(_, _, _)))));
+    }
+
+    #[test]
+    fn preserves_blank_lines_between_markdown_blocks() {
+        let lines =
+            render_markdown_lines("Observed error:\n\n\n```js\nconsole.log('broken');\n```");
+        let plain = lines.iter().map(plain_line).collect::<Vec<_>>();
+
+        assert_eq!(
+            plain,
+            vec![
+                "Observed error:",
+                "",
+                "",
+                "code js",
+                "    console.log('broken');"
+            ]
+        );
+    }
+
+    #[test]
+    fn cd_command_quotes_journey_paths() {
+        let command = cd_command(Path::new("/tmp/my journey/it's here"));
+
+        assert_eq!(command, "cd -- '/tmp/my journey/it'\\''s here'");
+    }
+
+    #[test]
+    fn branch_filter_matches_all_query_terms() {
+        let branches = vec![
+            "main".to_string(),
+            "feature/editor-esm".to_string(),
+            "fix/editor-cjs".to_string(),
+        ];
+
+        assert_eq!(branch_filter_indices(&branches, ""), vec![0, 1, 2]);
+        assert_eq!(branch_filter_indices(&branches, "editor esm"), vec![1]);
+        assert!(branch_filter_indices(&branches, "editor missing").is_empty());
     }
 
     fn plain_line(line: &Line<'_>) -> String {
