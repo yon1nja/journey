@@ -17,6 +17,8 @@ pub struct Cli {
 pub enum Commands {
     /// Create a new Journey without opening the interactive app.
     New(NewArgs),
+    /// Append a quick capture to a Journey-local Markdown doc.
+    Capture(CaptureArgs),
     /// Link a git repository or worktree to the current Journey.
     Link {
         repo_path: PathBuf,
@@ -74,6 +76,16 @@ pub struct NewArgs {
     pub text: Vec<String>,
     #[arg(short, long)]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CaptureArgs {
+    #[arg(num_args = 0..)]
+    pub text: Vec<String>,
+    #[arg(long)]
+    pub journey: Option<String>,
+    #[arg(long, default_value = "capture")]
+    pub doc: String,
 }
 
 #[derive(Debug, Args)]

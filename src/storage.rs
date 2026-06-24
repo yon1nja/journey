@@ -44,6 +44,7 @@ The `journey` CLI manages this folder. Key commands:
 - `journey unlink <name>` — detach a worktree.
 - `journey readme new` — create README.md if it does not already exist.
 - `journey readme path` — print the absolute path to README.md.
+- `journey capture <text>` — append a timestamped quick capture to docs/capture.md.
 - `journey doc new <name>` — create a new doc under `docs/`.
 - `journey doc list` — list existing docs.
 - `journey pause` / `journey resume` — lifecycle transitions.
@@ -532,6 +533,24 @@ pub fn write_string_atomic(path: &Path, content: &str) -> Result<()> {
         tmp.flush()?;
         tmp.persist(path)
             .map_err(|err| anyhow!("failed to persist {}: {}", path.display(), err.error))?;
+        Ok(())
+    } else {
+        bail!("path has no parent: {}", path.display());
+    }
+}
+
+pub fn append_string(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        file.flush()
+            .with_context(|| format!("failed to flush {}", path.display()))?;
         Ok(())
     } else {
         bail!("path has no parent: {}", path.display());

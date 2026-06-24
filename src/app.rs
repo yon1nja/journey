@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Read};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -12,6 +12,8 @@ use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
 use crate::storage::{self, JourneyContext};
 use crate::tui;
 
+pub(crate) const DEFAULT_CAPTURE_DOC: &str = "capture";
+
 pub fn run(cli: Cli) -> Result<String> {
     let home = storage::journey_home()?;
     let cwd = env::current_dir().context("failed to read current directory")?;
@@ -19,6 +21,10 @@ pub fn run(cli: Cli) -> Result<String> {
     match cli.command {
         None => list_journeys(&home, &cwd, JourneyStatus::Active, false),
         Some(Commands::New(args)) => new_journey(&home, &join_words(&args.text), args.description),
+        Some(Commands::Capture(args)) => {
+            let text = read_capture_input(&args.text)?;
+            capture(&home, &cwd, args.journey.as_deref(), &args.doc, &text)
+        }
         Some(Commands::Link {
             repo_path,
             name,
@@ -67,6 +73,63 @@ fn clean_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn read_capture_input(words: &[String]) -> Result<String> {
+    let raw = if words.is_empty() {
+        if io::stdin().is_terminal() {
+            bail!("capture text is required; pass text or pipe stdin");
+        }
+        let mut input = String::new();
+        io::stdin()
+            .read_to_string(&mut input)
+            .context("failed to read capture text from stdin")?;
+        input
+    } else {
+        join_words(words)
+    };
+
+    clean_capture_text(&raw)
+}
+
+fn clean_capture_text(value: &str) -> Result<String> {
+    let text = value.trim();
+    if text.is_empty() {
+        bail!("capture text cannot be empty");
+    }
+    Ok(text.to_string())
+}
+
+pub(crate) fn capture(
+    home: &Path,
+    cwd: &Path,
+    id: Option<&str>,
+    doc: &str,
+    text: &str,
+) -> Result<String> {
+    let ctx = storage::resolve_context(home, id, cwd)?;
+    let text = clean_capture_text(text)?;
+    let path = storage::doc_path(&ctx.path, doc)?;
+    let existed = path.exists();
+    let now = events::now_rfc3339()?;
+
+    let mut content = String::new();
+    if existed {
+        content.push_str("\n\n");
+    } else {
+        content.push_str(&format!("# {}\n\n", doc_title(&path)));
+    }
+    content.push_str(&format!("## {now}\n\n{text}\n"));
+    storage::append_string(&path, &content)?;
+    storage::update_index_entry(home, &ctx.journey, &now)?;
+
+    Ok(format!("captured to {}", path.display()))
+}
+
+fn doc_title(path: &Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().replace('-', " "))
+        .unwrap_or_else(|| "doc".to_string())
 }
 
 fn list_journeys(

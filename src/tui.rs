@@ -67,13 +67,14 @@ fn terminal_writer() -> TerminalWriter {
     }
 }
 
-const ACTIONS: [JourneyAction; 13] = [
+const ACTIONS: [JourneyAction; 14] = [
     JourneyAction::OpenClaude,
     JourneyAction::OpenNvim,
     JourneyAction::Worktree,
     JourneyAction::ExistingBranchWorktree,
     JourneyAction::Link,
     JourneyAction::Unlink,
+    JourneyAction::Capture,
     JourneyAction::DeleteWorktree,
     JourneyAction::Done,
     JourneyAction::Pause,
@@ -246,6 +247,9 @@ impl JourneyApp {
             )),
             Dialog::WorktreePath { input, .. } => {
                 Some(handle_text_input(input, key, DialogKeyTarget::WorktreePath))
+            }
+            Dialog::Capture { input, .. } => {
+                Some(handle_text_input(input, key, DialogKeyTarget::Capture))
             }
             Dialog::ExistingBranch {
                 selected,
@@ -533,6 +537,7 @@ impl JourneyApp {
             DialogAction::SubmitNewDescription => self.create_journey_from_dialog()?,
             DialogAction::SubmitWorktreeBranch => self.open_worktree_path_dialog(),
             DialogAction::SubmitWorktreePath => self.create_worktree_from_dialog()?,
+            DialogAction::SubmitCapture => self.capture_from_dialog()?,
             DialogAction::SubmitExistingBranch => self.open_existing_worktree_path_dialog(),
             DialogAction::SubmitExistingWorktreePath => {
                 self.create_existing_worktree_from_dialog()?
@@ -759,6 +764,7 @@ impl JourneyApp {
             ShortcutAction::ExistingBranchWorktree => JourneyAction::ExistingBranchWorktree,
             ShortcutAction::LinkCurrent => JourneyAction::Link,
             ShortcutAction::UnlinkRepo => JourneyAction::Unlink,
+            ShortcutAction::Capture => JourneyAction::Capture,
             ShortcutAction::DeleteWorktree => JourneyAction::DeleteWorktree,
             ShortcutAction::Done => JourneyAction::Done,
             ShortcutAction::Pause => JourneyAction::Pause,
@@ -816,6 +822,12 @@ impl JourneyApp {
                 let _ = self.record_mutation(result, Some(journey_id));
             }
             JourneyAction::Unlink => self.open_unlink_dialog(&journey_id),
+            JourneyAction::Capture => {
+                self.dialog = Dialog::Capture {
+                    journey_id,
+                    input: String::new(),
+                };
+            }
             JourneyAction::DeleteWorktree => self.open_delete_worktree_dialog(&journey_id),
             JourneyAction::Done => self.open_done_dialog(&journey_id),
             JourneyAction::Pause => {
@@ -920,6 +932,28 @@ impl JourneyApp {
         let journey_id = journey_id.clone();
         let repo_name = repo.name.clone();
         let result = app::delete_worktree(&self.home, &self.cwd, Some(&journey_id), &repo_name);
+        self.dialog = Dialog::None;
+        self.record_mutation(result, Some(journey_id))
+    }
+
+    fn capture_from_dialog(&mut self) -> Result<()> {
+        let Dialog::Capture { journey_id, input } = &self.dialog else {
+            return Ok(());
+        };
+        let journey_id = journey_id.clone();
+        let text = input.trim().to_string();
+        if text.is_empty() {
+            self.notice_error("capture text is required");
+            return Ok(());
+        }
+
+        let result = app::capture(
+            &self.home,
+            &self.cwd,
+            Some(&journey_id),
+            app::DEFAULT_CAPTURE_DOC,
+            &text,
+        );
         self.dialog = Dialog::None;
         self.record_mutation(result, Some(journey_id))
     }
@@ -1388,7 +1422,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
 
 fn normal_help(app: &JourneyApp) -> String {
     format!(
-        "NORMAL  {} search  {} new  {} claude  {} nvim  {}/{} worktree  {}/{} link  {} delete  {} done  {} pause  {} archive  Esc/q quit",
+        "NORMAL  {} search  {} new  {} claude  {} nvim  {}/{} worktree  {}/{} link  {} capture  {} delete  {} done  {} pause  {} archive  Esc/q quit",
         app.shortcuts.insert_mode.display(),
         app.shortcuts.new_journey.display(),
         app.shortcuts
@@ -1408,6 +1442,9 @@ fn normal_help(app: &JourneyApp) -> String {
             .display(),
         app.shortcuts
             .binding_for_action(ShortcutAction::UnlinkRepo)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::Capture)
             .display(),
         app.shortcuts
             .binding_for_action(ShortcutAction::DeleteWorktree)
@@ -1519,6 +1556,14 @@ fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
         Dialog::DeleteWorktree { repos, state, .. } => {
             render_repo_selection_dialog(frame, area, " Delete Worktree ", repos, state);
         }
+        Dialog::Capture { input, .. } => render_input_dialog(
+            frame,
+            area,
+            "Capture Thought",
+            "Text",
+            input,
+            "Enter capture  Esc cancel",
+        ),
         Dialog::DoneConfirm {
             journey_id,
             repo_count,
@@ -2609,6 +2654,7 @@ enum JourneyAction {
     ExistingBranchWorktree,
     Link,
     Unlink,
+    Capture,
     DeleteWorktree,
     Done,
     Pause,
@@ -2627,6 +2673,7 @@ impl JourneyAction {
             JourneyAction::ExistingBranchWorktree => "Existing branch + worktree",
             JourneyAction::Link => "Link current worktree",
             JourneyAction::Unlink => "Unlink a repo",
+            JourneyAction::Capture => "Capture thought",
             JourneyAction::DeleteWorktree => "Delete worktree",
             JourneyAction::Done => "Done",
             JourneyAction::Pause => "Pause",
@@ -2645,6 +2692,7 @@ impl JourneyAction {
             JourneyAction::ExistingBranchWorktree => "select branch",
             JourneyAction::Link => "attach cwd repo",
             JourneyAction::Unlink => "detach linked repo",
+            JourneyAction::Capture => "append docs/capture.md",
             JourneyAction::DeleteWorktree => "git remove + unlink",
             JourneyAction::Done => "archive + remove worktrees",
             JourneyAction::Pause => "lifecycle only",
@@ -2661,6 +2709,7 @@ impl JourneyAction {
             JourneyAction::ExistingBranchWorktree => Some(ShortcutAction::ExistingBranchWorktree),
             JourneyAction::Link => Some(ShortcutAction::LinkCurrent),
             JourneyAction::Unlink => Some(ShortcutAction::UnlinkRepo),
+            JourneyAction::Capture => Some(ShortcutAction::Capture),
             JourneyAction::DeleteWorktree => Some(ShortcutAction::DeleteWorktree),
             JourneyAction::Done => Some(ShortcutAction::Done),
             JourneyAction::Pause => Some(ShortcutAction::Pause),
@@ -2755,6 +2804,10 @@ enum Dialog {
         selected: usize,
         state: ListState,
     },
+    Capture {
+        journey_id: String,
+        input: String,
+    },
     DoneConfirm {
         journey_id: String,
         repo_count: usize,
@@ -2772,6 +2825,7 @@ enum DialogKeyTarget {
     NewDescription,
     WorktreeBranch,
     WorktreePath,
+    Capture,
     ExistingWorktreePath,
 }
 
@@ -2782,6 +2836,7 @@ impl DialogKeyTarget {
             DialogKeyTarget::NewDescription => DialogAction::SubmitNewDescription,
             DialogKeyTarget::WorktreeBranch => DialogAction::SubmitWorktreeBranch,
             DialogKeyTarget::WorktreePath => DialogAction::SubmitWorktreePath,
+            DialogKeyTarget::Capture => DialogAction::SubmitCapture,
             DialogKeyTarget::ExistingWorktreePath => DialogAction::SubmitExistingWorktreePath,
         }
     }
@@ -2794,6 +2849,7 @@ enum DialogAction {
     SubmitNewDescription,
     SubmitWorktreeBranch,
     SubmitWorktreePath,
+    SubmitCapture,
     SubmitExistingBranch,
     SubmitExistingWorktreePath,
     SubmitExistingWorktreeLink,

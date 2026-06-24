@@ -19,6 +19,7 @@ new_branch_worktree = "b"
 existing_branch_worktree = "w"
 link_current = "l"
 unlink_repo = "u"
+capture = "t"
 delete_worktree = "d"
 done = "f"
 pause = "p"
@@ -38,6 +39,7 @@ pub(crate) struct ShortcutConfig {
     existing_branch_worktree: KeyBinding,
     link_current: KeyBinding,
     unlink_repo: KeyBinding,
+    capture: KeyBinding,
     delete_worktree: KeyBinding,
     done: KeyBinding,
     pause: KeyBinding,
@@ -96,6 +98,7 @@ impl ShortcutConfig {
             shortcuts.unlink_repo,
             "shortcuts.unlink_repo",
         )?;
+        apply_key(&mut config.capture, shortcuts.capture, "shortcuts.capture")?;
         apply_key(
             &mut config.delete_worktree,
             shortcuts.delete_worktree,
@@ -147,6 +150,7 @@ impl ShortcutConfig {
             ShortcutAction::ExistingBranchWorktree => self.existing_branch_worktree,
             ShortcutAction::LinkCurrent => self.link_current,
             ShortcutAction::UnlinkRepo => self.unlink_repo,
+            ShortcutAction::Capture => self.capture,
             ShortcutAction::DeleteWorktree => self.delete_worktree,
             ShortcutAction::Done => self.done,
             ShortcutAction::Pause => self.pause,
@@ -162,6 +166,7 @@ impl ShortcutConfig {
             ShortcutAction::ExistingBranchWorktree,
             ShortcutAction::LinkCurrent,
             ShortcutAction::UnlinkRepo,
+            ShortcutAction::Capture,
             ShortcutAction::DeleteWorktree,
             ShortcutAction::Done,
             ShortcutAction::Pause,
@@ -183,6 +188,7 @@ impl ShortcutConfig {
                 ("existing_branch_worktree", self.existing_branch_worktree),
                 ("link_current", self.link_current),
                 ("unlink_repo", self.unlink_repo),
+                ("capture", self.capture),
                 ("delete_worktree", self.delete_worktree),
                 ("done", self.done),
                 ("pause", self.pause),
@@ -209,6 +215,7 @@ impl Default for ShortcutConfig {
             existing_branch_worktree: KeyBinding::plain('w'),
             link_current: KeyBinding::plain('l'),
             unlink_repo: KeyBinding::plain('u'),
+            capture: KeyBinding::plain('t'),
             delete_worktree: KeyBinding::plain('d'),
             done: KeyBinding::plain('f'),
             pause: KeyBinding::plain('p'),
@@ -240,6 +247,7 @@ pub(crate) enum ShortcutAction {
     ExistingBranchWorktree,
     LinkCurrent,
     UnlinkRepo,
+    Capture,
     DeleteWorktree,
     Done,
     Pause,
@@ -366,6 +374,7 @@ struct ShortcutOverrides {
     existing_branch_worktree: Option<String>,
     link_current: Option<String>,
     unlink_repo: Option<String>,
+    capture: Option<String>,
     delete_worktree: Option<String>,
     done: Option<String>,
     pause: Option<String>,
@@ -424,6 +433,10 @@ mod tests {
         assert_eq!(
             config.normal_command(key('b')),
             Some(NormalShortcut::Action(ShortcutAction::NewBranchWorktree))
+        );
+        assert_eq!(
+            config.normal_command(key('t')),
+            Some(NormalShortcut::Action(ShortcutAction::Capture))
         );
         assert_eq!(
             config.normal_command(key('a')),

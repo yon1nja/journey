@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
 
@@ -45,6 +46,38 @@ fn journey_fails(home: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stderr).expect("stderr was not UTF-8")
 }
 
+fn journey_with_stdin(home: &Path, cwd: Option<&Path>, args: &[&str], stdin: &str) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_journey"));
+    command
+        .env("JOURNEY_HOME", home)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+
+    let mut child = command.spawn().expect("failed to run journey");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .expect("failed to write journey stdin");
+    let output = child.wait_with_output().expect("failed to run journey");
+
+    assert!(
+        output.status.success(),
+        "journey {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stdout).expect("stdout was not UTF-8")
+}
+
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
@@ -87,6 +120,7 @@ fn full_cli_flow_links_docs_and_worktrees_without_generated_state() {
     let agents = fs::read_to_string(home.join("journeys/test-journey/AGENTS.md")).unwrap();
     assert!(agents.contains("README.md"));
     assert!(agents.contains("journey readme new"));
+    assert!(agents.contains("journey capture <text>"));
     assert!(agents.contains("interactive Details pane"));
 
     let doc_path = journey(
@@ -217,6 +251,52 @@ fn readme_command_creates_root_readme_without_overwriting() {
 
     let error = journey_fails(&home, &["readme", "new", "--journey", "readme-journey"]);
     assert!(error.contains("README already exists"));
+}
+
+#[test]
+fn capture_appends_timestamped_markdown_without_journal_events() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Capture", "Flow"]);
+
+    let captured = journey(
+        &home,
+        &[
+            "capture",
+            "--journey",
+            "capture-flow",
+            "remember",
+            "the",
+            "race",
+        ],
+    );
+    assert!(captured.contains("journeys/capture-flow/docs/capture.md"));
+
+    let piped = journey_with_stdin(
+        &home,
+        None,
+        &["capture", "--journey", "capture-flow", "--doc", "scratch"],
+        "line one\nline two\n",
+    );
+    assert!(piped.contains("journeys/capture-flow/docs/scratch.md"));
+
+    let capture = fs::read_to_string(home.join("journeys/capture-flow/docs/capture.md")).unwrap();
+    assert!(capture.starts_with("# capture\n\n## "));
+    assert!(capture.contains("\n\nremember the race\n"));
+
+    let scratch = fs::read_to_string(home.join("journeys/capture-flow/docs/scratch.md")).unwrap();
+    assert!(scratch.starts_with("# scratch\n\n## "));
+    assert!(scratch.contains("\n\nline one\nline two\n"));
+
+    let docs = journey(&home, &["doc", "list", "--journey", "capture-flow"]);
+    assert!(docs.contains("capture.md"));
+    assert!(docs.contains("scratch.md"));
+
+    let status = journey(&home, &["status", "capture-flow"]);
+    assert!(status.contains("events: 0"));
+
+    let journal = fs::read_to_string(home.join("journeys/capture-flow/journal.jsonl")).unwrap();
+    assert!(journal.trim().is_empty());
 }
 
 #[test]
