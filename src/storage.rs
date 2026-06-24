@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use tempfile::NamedTempFile;
 
+use crate::config;
 use crate::models::{
     Index, IndexEntry, JourneyFile, JourneyStatus, RepoRef, WorktreeAttachment, WorktreeIndex,
 };
@@ -91,6 +92,9 @@ pub fn journey_home() -> Result<PathBuf> {
 pub fn ensure_home(home: &Path) -> Result<()> {
     fs::create_dir_all(home.join(JOURNEYS_DIR))
         .with_context(|| format!("failed to create {}", home.join(JOURNEYS_DIR).display()))?;
+    if !home.join(config::CONFIG_FILE).exists() {
+        write_string_atomic(&home.join(config::CONFIG_FILE), config::DEFAULT_CONFIG_TOML)?;
+    }
     if !home.join(INDEX_FILE).exists() {
         write_yaml_atomic(&home.join(INDEX_FILE), &Index::default())?;
     }
@@ -627,5 +631,18 @@ mod tests {
         assert!(normalize_doc_name("design.md").is_ok());
         assert!(normalize_doc_name("../design").is_err());
         assert!(normalize_doc_name("plans/design").is_err());
+    }
+
+    #[test]
+    fn ensure_home_creates_default_config() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let home = temp.path().join("journey-home");
+
+        ensure_home(&home).unwrap();
+
+        let config = fs::read_to_string(home.join(config::CONFIG_FILE)).unwrap();
+        assert!(config.contains("[shortcuts]"));
+        assert!(config.contains("open_claude = \"c\""));
+        assert!(config.contains("normal_mode = \"esc\""));
     }
 }

@@ -20,7 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
-    Table, TableState, Wrap,
+    Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
 };
 use ratatui::{Frame, Terminal};
 use syntect::easy::HighlightLines;
@@ -30,6 +30,7 @@ use syntect::highlighting::{
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::app;
+use crate::config::{InsertShortcut, NormalShortcut, ShortcutAction, ShortcutConfig};
 use crate::events;
 use crate::git;
 use crate::models::{IndexEntry, JourneyStatus, RepoRef};
@@ -66,9 +67,9 @@ fn terminal_writer() -> TerminalWriter {
     }
 }
 
-const ACTIONS: [JourneyAction; 11] = [
-    JourneyAction::CopyCd,
-    JourneyAction::Resume,
+const ACTIONS: [JourneyAction; 13] = [
+    JourneyAction::OpenClaude,
+    JourneyAction::OpenNvim,
     JourneyAction::Worktree,
     JourneyAction::ExistingBranchWorktree,
     JourneyAction::Link,
@@ -77,6 +78,8 @@ const ACTIONS: [JourneyAction; 11] = [
     JourneyAction::Done,
     JourneyAction::Pause,
     JourneyAction::Archive,
+    JourneyAction::CopyCd,
+    JourneyAction::Resume,
     JourneyAction::Abandon,
 ];
 
@@ -116,7 +119,17 @@ pub(crate) fn run_journey_app(
     let cleanup = restore_terminal(&mut terminal);
 
     match (result, cleanup) {
-        (Ok(output), Ok(())) => Ok(output),
+        (Ok(AppOutput::None), Ok(())) => Ok(None),
+        (
+            Ok(AppOutput::RunInJourney {
+                command,
+                journey_path,
+            }),
+            Ok(()),
+        ) => {
+            run_command_in_journey(command, &journey_path)?;
+            Ok(None)
+        }
         (Err(err), _) => Err(err),
         (Ok(_), Err(err)) => Err(err),
     }
@@ -140,13 +153,25 @@ struct JourneyApp {
     selected: usize,
     table_state: TableState,
     focus: Focus,
+    input_mode: InputMode,
+    shortcuts: ShortcutConfig,
+    details_scroll: usize,
+    details_viewport_height: usize,
     action_selected: usize,
     action_state: ListState,
     dialog: Dialog,
     notice: Option<Notice>,
     readme_cache: ReadmeRenderCache,
-    output: Option<String>,
+    output: Option<AppOutput>,
     should_quit: bool,
+}
+
+enum AppOutput {
+    None,
+    RunInJourney {
+        command: &'static str,
+        journey_path: PathBuf,
+    },
 }
 
 impl JourneyApp {
@@ -161,6 +186,10 @@ impl JourneyApp {
             selected: 0,
             table_state: TableState::default(),
             focus: Focus::Journeys,
+            input_mode: InputMode::Normal,
+            shortcuts: ShortcutConfig::load(home)?,
+            details_scroll: 0,
+            details_viewport_height: 1,
             action_selected: 0,
             action_state: ListState::default(),
             dialog: Dialog::None,
@@ -173,12 +202,12 @@ impl JourneyApp {
         Ok(app)
     }
 
-    fn run(&mut self, terminal: &mut JourneyTerminal) -> Result<Option<String>> {
+    fn run(&mut self, terminal: &mut JourneyTerminal) -> Result<AppOutput> {
         loop {
             terminal.draw(|frame| render(frame, self))?;
 
             if self.should_quit {
-                return Ok(self.output.take());
+                return Ok(self.output.take().unwrap_or(AppOutput::None));
             }
 
             if event::poll(Duration::from_millis(200))? {
@@ -339,29 +368,75 @@ impl JourneyApp {
     }
 
     fn handle_main_key(&mut self, key: KeyEvent) {
+        if self.handle_shortcut(key) {
+            return;
+        }
+
         match self.focus {
             Focus::Journeys => self.handle_journey_key(key),
+            Focus::Details => self.handle_details_key(key),
             Focus::Actions => self.handle_action_key(key),
         }
+    }
+
+    fn handle_shortcut(&mut self, key: KeyEvent) -> bool {
+        match self.input_mode {
+            InputMode::Normal => {
+                if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                    self.should_quit = true;
+                    return true;
+                }
+
+                match self.shortcuts.normal_command(key) {
+                    Some(NormalShortcut::NewJourney) => {
+                        self.open_new_journey_dialog();
+                        true
+                    }
+                    Some(NormalShortcut::SwitchToInsert) => {
+                        self.input_mode = InputMode::Insert;
+                        self.focus = Focus::Journeys;
+                        true
+                    }
+                    Some(NormalShortcut::Action(action)) => {
+                        self.execute_shortcut_action(action);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            InputMode::Insert => match self.shortcuts.insert_command(key) {
+                Some(InsertShortcut::NewJourney) => {
+                    self.open_new_journey_dialog();
+                    true
+                }
+                Some(InsertShortcut::SwitchToNormal) => {
+                    self.input_mode = InputMode::Normal;
+                    self.focus = Focus::Journeys;
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+
+    fn open_new_journey_dialog(&mut self) {
+        self.dialog = Dialog::NewTitle {
+            input: String::new(),
+        };
     }
 
     fn handle_journey_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                if self.query.is_empty() {
-                    self.should_quit = true;
-                } else {
+                if self.input_mode == InputMode::Normal && !self.query.is_empty() {
                     self.query.clear();
                     self.apply_filter(None);
                 }
             }
-            KeyCode::Char('q') if self.query.is_empty() && key.modifiers.is_empty() => {
+            KeyCode::Char('q')
+                if self.input_mode == InputMode::Normal && key.modifiers.is_empty() =>
+            {
                 self.should_quit = true;
-            }
-            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.dialog = Dialog::NewTitle {
-                    input: String::new(),
-                };
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.reload_with_notice();
@@ -370,6 +445,11 @@ impl JourneyApp {
             KeyCode::BackTab => self.cycle_filter(true),
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
+            KeyCode::Right => {
+                if self.selected_entry().is_some() {
+                    self.focus = Focus::Details;
+                }
+            }
             KeyCode::Enter => {
                 if self.selected_entry().is_some() {
                     self.focus = Focus::Actions;
@@ -377,13 +457,39 @@ impl JourneyApp {
                     self.sync_action_state();
                 }
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if self.input_mode == InputMode::Insert => {
                 self.query.pop();
                 self.apply_filter(None);
             }
-            KeyCode::Char(ch) if editable_modifiers(key.modifiers) => {
+            KeyCode::Char(ch)
+                if self.input_mode == InputMode::Insert && editable_modifiers(key.modifiers) =>
+            {
                 self.query.push(ch);
                 self.apply_filter(None);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_details_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Left => self.focus = Focus::Journeys,
+            KeyCode::Char('q') if key.modifiers.is_empty() => self.focus = Focus::Journeys,
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.reload_with_notice();
+            }
+            KeyCode::Up => self.scroll_details_up(1),
+            KeyCode::Down => self.scroll_details_down(1),
+            KeyCode::PageUp => self.scroll_details_up(self.details_page_step()),
+            KeyCode::PageDown => self.scroll_details_down(self.details_page_step()),
+            KeyCode::Home => self.details_scroll = 0,
+            KeyCode::End => self.details_scroll = usize::MAX,
+            KeyCode::Enter => {
+                if self.selected_entry().is_some() {
+                    self.focus = Focus::Actions;
+                    self.action_selected = 0;
+                    self.sync_action_state();
+                }
             }
             _ => {}
         }
@@ -393,11 +499,6 @@ impl JourneyApp {
         match key.code {
             KeyCode::Esc => self.focus = Focus::Journeys,
             KeyCode::Char('q') if key.modifiers.is_empty() => self.focus = Focus::Journeys,
-            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.dialog = Dialog::NewTitle {
-                    input: String::new(),
-                };
-            }
             KeyCode::Up => {
                 self.action_selected = self.action_selected.saturating_sub(1);
                 self.sync_action_state();
@@ -647,11 +748,29 @@ impl JourneyApp {
     }
 
     fn execute_selected_action(&mut self) {
+        self.execute_action(ACTIONS[self.action_selected]);
+    }
+
+    fn execute_shortcut_action(&mut self, action: ShortcutAction) {
+        self.execute_action(match action {
+            ShortcutAction::OpenClaude => JourneyAction::OpenClaude,
+            ShortcutAction::OpenNvim => JourneyAction::OpenNvim,
+            ShortcutAction::NewBranchWorktree => JourneyAction::Worktree,
+            ShortcutAction::ExistingBranchWorktree => JourneyAction::ExistingBranchWorktree,
+            ShortcutAction::LinkCurrent => JourneyAction::Link,
+            ShortcutAction::UnlinkRepo => JourneyAction::Unlink,
+            ShortcutAction::DeleteWorktree => JourneyAction::DeleteWorktree,
+            ShortcutAction::Done => JourneyAction::Done,
+            ShortcutAction::Pause => JourneyAction::Pause,
+            ShortcutAction::Archive => JourneyAction::Archive,
+        });
+    }
+
+    fn execute_action(&mut self, action: JourneyAction) {
         let Some(journey_id) = self.selected_id() else {
             self.notice_error("no Journey selected");
             return;
         };
-        let action = ACTIONS[self.action_selected];
 
         match action {
             JourneyAction::CopyCd => {
@@ -661,6 +780,20 @@ impl JourneyApp {
                     Ok(()) => self.notice_success("copied cd command to clipboard"),
                     Err(err) => self.notice_error(format!("clipboard failed: {err}")),
                 }
+            }
+            JourneyAction::OpenNvim => {
+                self.output = Some(AppOutput::RunInJourney {
+                    command: "nvim",
+                    journey_path: storage::journey_dir(&self.home, &journey_id),
+                });
+                self.should_quit = true;
+            }
+            JourneyAction::OpenClaude => {
+                self.output = Some(AppOutput::RunInJourney {
+                    command: "claude",
+                    journey_path: storage::journey_dir(&self.home, &journey_id),
+                });
+                self.should_quit = true;
             }
             JourneyAction::Resume => {
                 let result = app::resume(&self.home, &self.cwd, Some(&journey_id));
@@ -851,6 +984,7 @@ impl JourneyApp {
     }
 
     fn apply_filter(&mut self, preferred_id: Option<&str>) {
+        self.reset_details_scroll();
         self.filtered = self
             .rows
             .iter()
@@ -915,15 +1049,35 @@ impl JourneyApp {
         if self.filtered.is_empty() {
             return;
         }
+        let previous = self.selected;
         let len = self.filtered.len() as isize;
         let next = (self.selected as isize + delta).clamp(0, len - 1);
         self.selected = next as usize;
         self.sync_table_state();
+        if self.selected != previous {
+            self.reset_details_scroll();
+        }
     }
 
     fn cycle_filter(&mut self, reverse: bool) {
         self.filter = self.filter.cycle(reverse);
         self.apply_filter(None);
+    }
+
+    fn reset_details_scroll(&mut self) {
+        self.details_scroll = 0;
+    }
+
+    fn details_page_step(&self) -> usize {
+        self.details_viewport_height.saturating_sub(1).max(1)
+    }
+
+    fn scroll_details_up(&mut self, amount: usize) {
+        self.details_scroll = self.details_scroll.saturating_sub(amount);
+    }
+
+    fn scroll_details_down(&mut self, amount: usize) {
+        self.details_scroll = self.details_scroll.saturating_add(amount);
     }
 
     fn sync_table_state(&mut self) {
@@ -993,6 +1147,9 @@ fn render_header(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
             Span::styled(repo_hint, Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(vec![
+            Span::styled("mode: ", dim()),
+            Span::styled(app.input_mode.label(), app.input_mode.style()),
+            Span::raw("  "),
             Span::styled("filter: ", dim()),
             Span::styled(app.filter.label(), accent()),
             Span::raw("  "),
@@ -1026,6 +1183,7 @@ fn render_journey_list(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) 
 
     let title = match app.focus {
         Focus::Journeys => " Journeys ",
+        Focus::Details => " Journeys ",
         Focus::Actions => " Journeys ",
     };
     let block = Block::default()
@@ -1033,7 +1191,7 @@ fn render_journey_list(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) 
         .borders(Borders::ALL)
         .border_style(match app.focus {
             Focus::Journeys => accent(),
-            Focus::Actions => Style::default().fg(Color::DarkGray),
+            Focus::Details | Focus::Actions => Style::default().fg(Color::DarkGray),
         });
     let header = Row::new([
         Cell::from("Journey"),
@@ -1077,40 +1235,106 @@ fn journey_row(entry: &IndexEntry) -> Row<'static> {
 
 fn render_details(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
     match app.focus {
-        Focus::Journeys => {
-            let block = Block::default().title(" Details ").borders(Borders::ALL);
-            let text = Text::from(detail_lines(app));
-            frame.render_widget(
-                Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
-                area,
-            );
-        }
+        Focus::Journeys => render_details_pane(frame, app, area, false),
+        Focus::Details => render_details_pane(frame, app, area, true),
         Focus::Actions => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
                 .split(area);
-            let block = Block::default().title(" Details ").borders(Borders::ALL);
-            frame.render_widget(
-                Paragraph::new(Text::from(detail_lines(app)))
-                    .block(block)
-                    .wrap(Wrap { trim: false }),
-                chunks[0],
-            );
+            render_details_pane(frame, app, chunks[0], false);
             render_actions(frame, app, chunks[1]);
         }
     }
+}
+
+fn render_details_pane(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect, focused: bool) {
+    let block = Block::default()
+        .title(" Details ")
+        .borders(Borders::ALL)
+        .border_style(if focused { accent() } else { Style::default() });
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = detail_lines(app);
+    let mut content_area = inner;
+    let viewport_height = usize::from(content_area.height);
+    let mut content_height = wrapped_line_count(&lines, content_area.width);
+    let is_scrollable = content_height > viewport_height;
+    if is_scrollable && content_area.width > 1 {
+        content_area.width = content_area.width.saturating_sub(1);
+        content_height = wrapped_line_count(&lines, content_area.width);
+    }
+
+    app.details_viewport_height = usize::from(content_area.height).max(1);
+    let max_scroll = content_height.saturating_sub(app.details_viewport_height);
+    app.details_scroll = app.details_scroll.min(max_scroll);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_offset(app.details_scroll), 0)),
+        content_area,
+    );
+
+    if max_scroll > 0 && inner.width > 0 && inner.height > 0 {
+        let scrollbar_area = Rect {
+            x: inner.x + inner.width.saturating_sub(1),
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        };
+        let mut scrollbar_state = ScrollbarState::new(details_scrollbar_content_length(max_scroll))
+            .position(app.details_scroll)
+            .viewport_content_length(app.details_viewport_height);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(None)
+                .thumb_style(if focused { accent() } else { dim() }),
+            scrollbar_area,
+            &mut scrollbar_state,
+        );
+    }
+}
+
+fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
+    let width = usize::from(width.max(1));
+    lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(width))
+        .sum()
+}
+
+fn scroll_offset(offset: usize) -> u16 {
+    offset.min(usize::from(u16::MAX)) as u16
+}
+
+fn details_scrollbar_content_length(max_scroll: usize) -> usize {
+    max_scroll.saturating_add(1)
 }
 
 fn render_actions(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
     let items = ACTIONS
         .iter()
         .map(|action| {
-            ListItem::new(Line::from(vec![
+            let mut spans = Vec::new();
+            if let Some(shortcut) = action.shortcut_action() {
+                spans.push(Span::styled(
+                    format!(
+                        "[{}] ",
+                        app.shortcuts.binding_for_action(shortcut).display()
+                    ),
+                    dim(),
+                ));
+            }
+            spans.extend([
                 Span::styled(action.label(), Style::default().fg(Color::White)),
                 Span::raw("  "),
                 Span::styled(action.description(), dim()),
-            ]))
+            ]);
+            ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
     let block = Block::default()
@@ -1133,9 +1357,24 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         };
         Line::from(Span::styled(notice.message.clone(), style))
     });
-    let help = match app.focus {
-        Focus::Journeys => "Enter actions  Ctrl-N new  Tab filter  Ctrl-R reload  Esc quit",
-        Focus::Actions => "Enter run  Esc back  Ctrl-N new",
+    let help = match app.input_mode {
+        InputMode::Insert => format!(
+            "INSERT  type search  {} normal  {} new  Tab filter  Up/Down select",
+            app.shortcuts.normal_mode.display(),
+            app.shortcuts.new_journey.display()
+        ),
+        InputMode::Normal => match app.focus {
+            Focus::Journeys => normal_help(app),
+            Focus::Details => {
+                "NORMAL  Up/Down scroll  PgUp/PgDn page  Left/Esc back  Enter actions".to_string()
+            }
+            Focus::Actions => {
+                format!(
+                    "NORMAL  Enter run  Esc back  {} new  shortcuts active",
+                    app.shortcuts.new_journey.display()
+                )
+            }
+        },
     };
     let lines = vec![
         notice.unwrap_or_else(|| Line::from("")),
@@ -1145,6 +1384,44 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         Paragraph::new(lines).block(Block::default().borders(Borders::TOP)),
         area,
     );
+}
+
+fn normal_help(app: &JourneyApp) -> String {
+    format!(
+        "NORMAL  {} search  {} new  {} claude  {} nvim  {}/{} worktree  {}/{} link  {} delete  {} done  {} pause  {} archive  Esc/q quit",
+        app.shortcuts.insert_mode.display(),
+        app.shortcuts.new_journey.display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::OpenClaude)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::OpenNvim)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::NewBranchWorktree)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::ExistingBranchWorktree)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::LinkCurrent)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::UnlinkRepo)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::DeleteWorktree)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::Done)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::Pause)
+            .display(),
+        app.shortcuts
+            .binding_for_action(ShortcutAction::Archive)
+            .display()
+    )
 }
 
 fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
@@ -2148,7 +2425,12 @@ fn create_and_link_worktree(
 }
 
 fn cd_command(path: &Path) -> String {
-    format!("cd -- {}", app::shell_quote(path))
+    format!("cd -- {}", shell_quote(path))
+}
+
+fn shell_quote(path: &Path) -> String {
+    let value = path.display().to_string();
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {
@@ -2216,6 +2498,22 @@ fn run_clipboard_command(command: &mut Command, text: &str) -> Result<()> {
     Ok(())
 }
 
+fn run_command_in_journey(command: &str, journey_path: &Path) -> Result<()> {
+    let status = Command::new(command)
+        .current_dir(journey_path)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to start {command} in Journey folder {}",
+                journey_path.display()
+            )
+        })?;
+    if !status.success() {
+        anyhow::bail!("{command} exited with {status}");
+    }
+    Ok(())
+}
+
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
@@ -2273,12 +2571,39 @@ fn status_style(status: JourneyStatus) -> Style {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Journeys,
+    Details,
     Actions,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    Normal,
+    Insert,
+}
+
+impl InputMode {
+    fn label(self) -> &'static str {
+        match self {
+            InputMode::Normal => "normal",
+            InputMode::Insert => "insert",
+        }
+    }
+
+    fn style(self) -> Style {
+        match self {
+            InputMode::Normal => Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            InputMode::Insert => accent().add_modifier(Modifier::BOLD),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 enum JourneyAction {
     CopyCd,
+    OpenNvim,
+    OpenClaude,
     Resume,
     Worktree,
     ExistingBranchWorktree,
@@ -2294,7 +2619,9 @@ enum JourneyAction {
 impl JourneyAction {
     fn label(self) -> &'static str {
         match self {
-            JourneyAction::CopyCd => "Copy cd",
+            JourneyAction::CopyCd => "Copy cd to path",
+            JourneyAction::OpenNvim => "Open nvim in Journey folder",
+            JourneyAction::OpenClaude => "Open Claude Code in Journey folder",
             JourneyAction::Resume => "Resume",
             JourneyAction::Worktree => "New branch + worktree",
             JourneyAction::ExistingBranchWorktree => "Existing branch + worktree",
@@ -2311,6 +2638,8 @@ impl JourneyAction {
     fn description(self) -> &'static str {
         match self {
             JourneyAction::CopyCd => "copy cd command",
+            JourneyAction::OpenNvim => "cd journey + run nvim",
+            JourneyAction::OpenClaude => "cd journey + run claude",
             JourneyAction::Resume => "mark active",
             JourneyAction::Worktree => "git worktree add -b",
             JourneyAction::ExistingBranchWorktree => "select branch",
@@ -2321,6 +2650,22 @@ impl JourneyAction {
             JourneyAction::Pause => "lifecycle only",
             JourneyAction::Archive => "release worktrees",
             JourneyAction::Abandon => "release worktrees",
+        }
+    }
+
+    fn shortcut_action(self) -> Option<ShortcutAction> {
+        match self {
+            JourneyAction::OpenClaude => Some(ShortcutAction::OpenClaude),
+            JourneyAction::OpenNvim => Some(ShortcutAction::OpenNvim),
+            JourneyAction::Worktree => Some(ShortcutAction::NewBranchWorktree),
+            JourneyAction::ExistingBranchWorktree => Some(ShortcutAction::ExistingBranchWorktree),
+            JourneyAction::Link => Some(ShortcutAction::LinkCurrent),
+            JourneyAction::Unlink => Some(ShortcutAction::UnlinkRepo),
+            JourneyAction::DeleteWorktree => Some(ShortcutAction::DeleteWorktree),
+            JourneyAction::Done => Some(ShortcutAction::Done),
+            JourneyAction::Pause => Some(ShortcutAction::Pause),
+            JourneyAction::Archive => Some(ShortcutAction::Archive),
+            JourneyAction::CopyCd | JourneyAction::Resume | JourneyAction::Abandon => None,
         }
     }
 }
@@ -2460,6 +2805,8 @@ enum DialogAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::widgets::StatefulWidget;
 
     #[test]
     fn renders_readme_markdown_as_terminal_lines() {
@@ -2505,6 +2852,40 @@ mod tests {
                 "code js",
                 "    console.log('broken');"
             ]
+        );
+    }
+
+    #[test]
+    fn counts_wrapped_detail_lines() {
+        let lines = vec![Line::from("abcdef"), Line::from("")];
+
+        assert_eq!(wrapped_line_count(&lines, 3), 3);
+        assert_eq!(wrapped_line_count(&lines, 0), 7);
+    }
+
+    #[test]
+    fn details_scrollbar_reaches_bottom_at_max_scroll() {
+        let viewport_height = 10;
+        let content_height = 30;
+        let max_scroll = content_height - viewport_height;
+        let mut state = ScrollbarState::new(details_scrollbar_content_length(max_scroll))
+            .position(max_scroll)
+            .viewport_content_length(viewport_height);
+        let area = Rect::new(0, 0, 1, viewport_height as u16);
+        let mut buffer = Buffer::empty(area);
+
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(None)
+            .render(area, &mut buffer, &mut state);
+
+        assert_eq!(
+            buffer
+                .cell((0, viewport_height as u16 - 1))
+                .expect("bottom scrollbar cell")
+                .symbol(),
+            "\u{2588}"
         );
     }
 

@@ -42,9 +42,6 @@ pub enum Commands {
         #[arg(long)]
         non_interactive: bool,
     },
-    /// Print shell integration for interactive directory changes.
-    #[command(name = "shell-init")]
-    ShellInit,
     /// Print a one-screen Journey summary.
     Status { id: Option<String> },
     /// Manage Journey-local docs.

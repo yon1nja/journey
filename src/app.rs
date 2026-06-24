@@ -12,9 +12,6 @@ use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
 use crate::storage::{self, JourneyContext};
 use crate::tui;
 
-const SHELL_INTEGRATION_ENV: &str = "JOURNEY_SHELL_INTEGRATION";
-pub(crate) const SHELL_CD_PREFIX: &str = "__journey_cd__\t";
-
 pub fn run(cli: Cli) -> Result<String> {
     let home = storage::journey_home()?;
     let cwd = env::current_dir().context("failed to read current directory")?;
@@ -40,7 +37,6 @@ pub fn run(cli: Cli) -> Result<String> {
             status.unwrap_or(JourneyStatus::Active),
             non_interactive,
         ),
-        Some(Commands::ShellInit) => shell_init(),
         Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
         Some(Commands::Readme { command }) => readme_command(&home, &cwd, command),
@@ -84,10 +80,7 @@ fn list_journeys(
     let mut rows = index.journeys.into_iter().collect::<Vec<_>>();
     rows.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
 
-    if !non_interactive
-        && (io::stdout().is_terminal()
-            || (shell_integration_active() && io::stderr().is_terminal()))
-    {
+    if !non_interactive && io::stdout().is_terminal() {
         return Ok(tui::run_journey_app(home, cwd, default_filter)?.unwrap_or_default());
     }
 
@@ -525,41 +518,6 @@ fn finish_mutation(ctx: &JourneyContext, updated: Option<String>) -> Result<()> 
         None => events::now_rfc3339()?,
     };
     storage::update_index_entry(&ctx.home, &ctx.journey, &updated)
-}
-
-pub(crate) fn shell_quote(path: &Path) -> String {
-    let value = path.display().to_string();
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn shell_quote_value(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-pub(crate) fn shell_integration_active() -> bool {
-    env::var_os(SHELL_INTEGRATION_ENV).is_some()
-}
-
-fn shell_init() -> Result<String> {
-    let exe = env::current_exe().context("failed to resolve current executable")?;
-    let exe_q = shell_quote(&exe);
-    let cd_prefix_q = shell_quote_value(SHELL_CD_PREFIX);
-    Ok(format!(
-        r#"journey() {{
-    local __journey_output __journey_status __journey_prefix
-    __journey_prefix={cd_prefix_q}
-    __journey_output="$(JOURNEY_SHELL_INTEGRATION=1 {exe_q} "$@")"
-    __journey_status=$?
-    if [ $__journey_status -eq 0 ] && [ "${{__journey_output#"$__journey_prefix"}}" != "$__journey_output" ]; then
-        builtin cd -- "${{__journey_output#"$__journey_prefix"}}"
-        return
-    fi
-    if [ -n "$__journey_output" ]; then
-        printf '%s\n' "$__journey_output"
-    fi
-    return $__journey_status
-}}"#
-    ))
 }
 
 fn validate_name(name: &str) -> Result<String> {

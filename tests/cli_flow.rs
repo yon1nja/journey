@@ -250,16 +250,13 @@ fn hidden_fzf_helpers_are_not_part_of_the_cli_surface() {
 }
 
 #[test]
-fn shell_init_wraps_journey_for_parent_shell_cd() {
+fn shell_init_is_not_part_of_the_cli_surface() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
 
-    let init = journey(&home, &["shell-init"]);
+    let error = journey_fails(&home, &["shell-init"]);
 
-    assert!(init.contains("journey() {"));
-    assert!(init.contains("JOURNEY_SHELL_INTEGRATION=1"));
-    assert!(init.contains("__journey_cd__\t"));
-    assert!(init.contains("builtin cd --"));
+    assert!(error.contains("unrecognized subcommand 'shell-init'"));
 }
 
 #[test]

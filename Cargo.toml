@@ -19,6 +19,7 @@ syntect = { version = "5.2", default-features = false, features = ["default-fanc
 tempfile = "3.10"
 thiserror = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3.10"
