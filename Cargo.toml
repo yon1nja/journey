@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Context persistence for engineering efforts"
 license = "MIT"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"

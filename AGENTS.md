@@ -14,12 +14,14 @@ The core invariant is that Journey owns the local container and indexes, not the
 
 ## Current User Experience
 
-- `journey` with no subcommand opens the full-screen terminal starter.
+- `journey` with no subcommand opens the interactive terminal app when stdout is a terminal, or prints the active Journey list in non-interactive contexts.
 - `journey new <title> --description <text>` creates a Journey without interactive UI and is the right path for scripts and agents.
-- `journey list` uses the real `fzf` binary in interactive terminals. It shows Journey names in the list and a preview pane with details.
+- `journey list` opens the same interactive terminal app in interactive terminals.
 - `journey list --non-interactive` prints table output for scripts and agents.
 - `journey status [<id>]` prints a compact summary.
+- `journey readme new/path` manage the optional user-owned Journey README.
 - `journey doc new/list/path` are convenience helpers for user-owned Markdown files under `docs/`.
+- `journey capture` appends timestamped notes to Journey-local Markdown docs.
 - `journey link` and `journey unlink` attach and detach live git worktrees by reference.
 - `journey resume`, `pause`, `archive`, and `abandon` are lifecycle status changes only.
 - `journey doctor [--repair]` inspects or rebuilds worktree attachment indexes.
@@ -48,6 +50,9 @@ Default state root is `~/.journey`; tests and agents can set `JOURNEY_HOME`.
     `-- <journey-id>/
         |-- journey.yaml
         |-- journal.jsonl
+        |-- AGENTS.md
+        |-- CLAUDE.md
+        |-- README.md
         |-- docs/
         `-- worktrees/
 ```
@@ -58,6 +63,9 @@ Key files:
 - `index.yaml`: global registry used by list/discovery.
 - `worktree-index.yaml`: canonical worktree path to owning Journey id and repo name.
 - `journal.jsonl`: operational events only. Current produced events are `link_repo`, `unlink_repo`, and `status_change`.
+- `AGENTS.md`: generated instructions for agents working inside a Journey.
+- `CLAUDE.md`: generated reference to `AGENTS.md`.
+- `README.md`: optional user-owned Journey overview.
 
 Environment variables:
 
@@ -77,26 +85,25 @@ Keep this behavior when adding commands that operate on an existing Journey.
 
 ## UI Direction
 
-The terminal UI should stay aligned with the current `journey list` style:
+The terminal UI should stay aligned with the current app style:
 
 - cyan active labels
 - dim metadata labels
 - green success state
-- left list or steps pane
-- right preview/details pane
-- prompts at the bottom
-
-`journey list` should continue using real `fzf`. The no-subcommand starter currently uses terminal rendering and line prompts without an additional TUI framework.
+- Journey list, details, and action panes
+- dialogs for multi-step actions
+- footer help text and notices
 
 ## Code Map
 
 - `src/cli.rs`: clap command definitions.
-- `src/app.rs`: command dispatch, core command behavior, starter TUI rendering.
+- `src/app.rs`: command dispatch and core command behavior.
 - `src/storage.rs`: files, indexes, context resolution, symlinks, atomic writes.
 - `src/models.rs`: serialized data structures.
 - `src/events.rs`: journal read/write and timestamps.
 - `src/git.rs`: git CLI wrapper and worktree creation.
-- `src/picker.rs`: fzf list, preview, and action popup.
+- `src/tui.rs`: interactive terminal app.
+- `src/config.rs`: interactive action ordering and shortcut configuration.
 - `tests/cli_flow.rs`: end-to-end CLI behavior.
 
 ## Development Notes
@@ -106,7 +113,7 @@ The terminal UI should stay aligned with the current `journey list` style:
 - Use `rg` for searching.
 - Be careful with dirty worktrees. Do not revert unrelated changes.
 - Avoid destructive git commands unless explicitly requested.
-- If adding dependencies, justify why the existing standard library, `console`, `clap`, and git/fzf CLIs are not enough.
+- If adding dependencies, justify why the existing standard library, `clap`, `ratatui`, `crossterm`, and git CLI are not enough.
 
 ## Verification
 
