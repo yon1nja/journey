@@ -11,6 +11,28 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_CONFIG_TOML: &str = r#"# Journey configuration.
 #
 # Shortcuts use single keys like "c", or control keys like "ctrl+n".
+#
+# Actions are shown in this order. Remove an action from order, or add it to
+# disabled, to hide it and disable its normal-mode shortcut.
+[actions]
+order = [
+  "open_claude",
+  "open_nvim",
+  "new_branch_worktree",
+  "existing_branch_worktree",
+  "link_current",
+  "unlink_repo",
+  "capture",
+  "delete_worktree",
+  "done",
+  "pause",
+  "archive",
+  "copy_cd",
+  "resume",
+  "abandon",
+]
+disabled = []
+
 [shortcuts]
 new_journey = "ctrl+n"
 open_claude = "c"
@@ -24,6 +46,9 @@ delete_worktree = "d"
 done = "f"
 pause = "p"
 archive = "x"
+copy_cd = "none"
+resume = "none"
+abandon = "none"
 insert_mode = "a"
 normal_mode = "esc"
 "#;
@@ -33,17 +58,8 @@ pub(crate) struct ShortcutConfig {
     pub(crate) new_journey: KeyBinding,
     pub(crate) insert_mode: KeyBinding,
     pub(crate) normal_mode: KeyBinding,
-    open_claude: KeyBinding,
-    open_nvim: KeyBinding,
-    new_branch_worktree: KeyBinding,
-    existing_branch_worktree: KeyBinding,
-    link_current: KeyBinding,
-    unlink_repo: KeyBinding,
-    capture: KeyBinding,
-    delete_worktree: KeyBinding,
-    done: KeyBinding,
-    pause: KeyBinding,
-    archive: KeyBinding,
+    actions: Vec<TuiAction>,
+    action_bindings: HashMap<TuiAction, Option<KeyBinding>>,
 }
 
 impl ShortcutConfig {
@@ -62,51 +78,55 @@ impl ShortcutConfig {
         let file: ConfigFile = toml::from_str(content)?;
         let mut config = Self::default();
         let shortcuts = file.shortcuts;
+        config.actions = resolve_action_order(file.actions)?;
 
         apply_key(
             &mut config.new_journey,
             shortcuts.new_journey,
             "shortcuts.new_journey",
         )?;
-        apply_key(
-            &mut config.open_claude,
+        config.apply_action_key(
+            TuiAction::OpenClaude,
             shortcuts.open_claude,
             "shortcuts.open_claude",
         )?;
-        apply_key(
-            &mut config.open_nvim,
+        config.apply_action_key(
+            TuiAction::OpenNvim,
             shortcuts.open_nvim,
             "shortcuts.open_nvim",
         )?;
-        apply_key(
-            &mut config.new_branch_worktree,
+        config.apply_action_key(
+            TuiAction::NewBranchWorktree,
             shortcuts.new_branch_worktree,
             "shortcuts.new_branch_worktree",
         )?;
-        apply_key(
-            &mut config.existing_branch_worktree,
+        config.apply_action_key(
+            TuiAction::ExistingBranchWorktree,
             shortcuts.existing_branch_worktree,
             "shortcuts.existing_branch_worktree",
         )?;
-        apply_key(
-            &mut config.link_current,
+        config.apply_action_key(
+            TuiAction::LinkCurrent,
             shortcuts.link_current,
             "shortcuts.link_current",
         )?;
-        apply_key(
-            &mut config.unlink_repo,
+        config.apply_action_key(
+            TuiAction::UnlinkRepo,
             shortcuts.unlink_repo,
             "shortcuts.unlink_repo",
         )?;
-        apply_key(&mut config.capture, shortcuts.capture, "shortcuts.capture")?;
-        apply_key(
-            &mut config.delete_worktree,
+        config.apply_action_key(TuiAction::Capture, shortcuts.capture, "shortcuts.capture")?;
+        config.apply_action_key(
+            TuiAction::DeleteWorktree,
             shortcuts.delete_worktree,
             "shortcuts.delete_worktree",
         )?;
-        apply_key(&mut config.done, shortcuts.done, "shortcuts.done")?;
-        apply_key(&mut config.pause, shortcuts.pause, "shortcuts.pause")?;
-        apply_key(&mut config.archive, shortcuts.archive, "shortcuts.archive")?;
+        config.apply_action_key(TuiAction::Done, shortcuts.done, "shortcuts.done")?;
+        config.apply_action_key(TuiAction::Pause, shortcuts.pause, "shortcuts.pause")?;
+        config.apply_action_key(TuiAction::Archive, shortcuts.archive, "shortcuts.archive")?;
+        config.apply_action_key(TuiAction::CopyCd, shortcuts.copy_cd, "shortcuts.copy_cd")?;
+        config.apply_action_key(TuiAction::Resume, shortcuts.resume, "shortcuts.resume")?;
+        config.apply_action_key(TuiAction::Abandon, shortcuts.abandon, "shortcuts.abandon")?;
         apply_key(
             &mut config.insert_mode,
             shortcuts.insert_mode,
@@ -142,86 +162,68 @@ impl ShortcutConfig {
         None
     }
 
-    pub(crate) fn binding_for_action(&self, action: ShortcutAction) -> KeyBinding {
-        match action {
-            ShortcutAction::OpenClaude => self.open_claude,
-            ShortcutAction::OpenNvim => self.open_nvim,
-            ShortcutAction::NewBranchWorktree => self.new_branch_worktree,
-            ShortcutAction::ExistingBranchWorktree => self.existing_branch_worktree,
-            ShortcutAction::LinkCurrent => self.link_current,
-            ShortcutAction::UnlinkRepo => self.unlink_repo,
-            ShortcutAction::Capture => self.capture,
-            ShortcutAction::DeleteWorktree => self.delete_worktree,
-            ShortcutAction::Done => self.done,
-            ShortcutAction::Pause => self.pause,
-            ShortcutAction::Archive => self.archive,
-        }
+    pub(crate) fn actions(&self) -> &[TuiAction] {
+        &self.actions
     }
 
-    fn action_for_key(&self, key: KeyEvent) -> Option<ShortcutAction> {
-        [
-            ShortcutAction::OpenClaude,
-            ShortcutAction::OpenNvim,
-            ShortcutAction::NewBranchWorktree,
-            ShortcutAction::ExistingBranchWorktree,
-            ShortcutAction::LinkCurrent,
-            ShortcutAction::UnlinkRepo,
-            ShortcutAction::Capture,
-            ShortcutAction::DeleteWorktree,
-            ShortcutAction::Done,
-            ShortcutAction::Pause,
-            ShortcutAction::Archive,
-        ]
-        .into_iter()
-        .find(|action| self.binding_for_action(*action).matches(key))
+    pub(crate) fn binding_for_action(&self, action: TuiAction) -> Option<KeyBinding> {
+        self.action_bindings.get(&action).copied().flatten()
+    }
+
+    fn action_for_key(&self, key: KeyEvent) -> Option<TuiAction> {
+        self.actions.iter().copied().find(|action| {
+            self.binding_for_action(*action)
+                .is_some_and(|binding| binding.matches(key))
+        })
     }
 
     fn validate(&self) -> Result<()> {
-        validate_unique(
-            "normal mode",
-            [
-                ("new_journey", self.new_journey),
-                ("insert_mode", self.insert_mode),
-                ("open_claude", self.open_claude),
-                ("open_nvim", self.open_nvim),
-                ("new_branch_worktree", self.new_branch_worktree),
-                ("existing_branch_worktree", self.existing_branch_worktree),
-                ("link_current", self.link_current),
-                ("unlink_repo", self.unlink_repo),
-                ("capture", self.capture),
-                ("delete_worktree", self.delete_worktree),
-                ("done", self.done),
-                ("pause", self.pause),
-                ("archive", self.archive),
-            ],
-        )?;
+        let mut normal_bindings = vec![
+            ("new_journey".to_string(), self.new_journey),
+            ("insert_mode".to_string(), self.insert_mode),
+        ];
+        for action in &self.actions {
+            if let Some(binding) = self.binding_for_action(*action) {
+                normal_bindings.push((action.config_key().to_string(), binding));
+            }
+        }
+        validate_unique("normal mode", normal_bindings)?;
         validate_unique(
             "insert mode",
-            [
-                ("new_journey", self.new_journey),
-                ("normal_mode", self.normal_mode),
+            vec![
+                ("new_journey".to_string(), self.new_journey),
+                ("normal_mode".to_string(), self.normal_mode),
             ],
         )
+    }
+
+    fn apply_action_key(
+        &mut self,
+        action: TuiAction,
+        value: Option<String>,
+        field: &str,
+    ) -> Result<()> {
+        if let Some(value) = value {
+            let binding = parse_optional_action_binding(&value)
+                .with_context(|| format!("invalid {field}"))?;
+            self.action_bindings.insert(action, binding);
+        }
+        Ok(())
     }
 }
 
 impl Default for ShortcutConfig {
     fn default() -> Self {
+        let action_bindings = TuiAction::all()
+            .into_iter()
+            .map(|action| (action, action.default_binding()))
+            .collect();
         Self {
             new_journey: KeyBinding::control('n'),
-            open_claude: KeyBinding::plain('c'),
-            open_nvim: KeyBinding::plain('n'),
-            new_branch_worktree: KeyBinding::plain('b'),
-            existing_branch_worktree: KeyBinding::plain('w'),
-            link_current: KeyBinding::plain('l'),
-            unlink_repo: KeyBinding::plain('u'),
-            capture: KeyBinding::plain('t'),
-            delete_worktree: KeyBinding::plain('d'),
-            done: KeyBinding::plain('f'),
-            pause: KeyBinding::plain('p'),
-            archive: KeyBinding::plain('x'),
             insert_mode: KeyBinding::plain('a'),
             normal_mode: KeyBinding::escape(),
+            actions: TuiAction::all().to_vec(),
+            action_bindings,
         }
     }
 }
@@ -230,7 +232,7 @@ impl Default for ShortcutConfig {
 pub(crate) enum NormalShortcut {
     NewJourney,
     SwitchToInsert,
-    Action(ShortcutAction),
+    Action(TuiAction),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,8 +241,9 @@ pub(crate) enum InsertShortcut {
     SwitchToNormal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShortcutAction {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TuiAction {
     OpenClaude,
     OpenNvim,
     NewBranchWorktree,
@@ -252,6 +255,66 @@ pub(crate) enum ShortcutAction {
     Done,
     Pause,
     Archive,
+    CopyCd,
+    Resume,
+    Abandon,
+}
+
+impl TuiAction {
+    pub(crate) const fn all() -> [Self; 14] {
+        [
+            Self::OpenClaude,
+            Self::OpenNvim,
+            Self::NewBranchWorktree,
+            Self::ExistingBranchWorktree,
+            Self::LinkCurrent,
+            Self::UnlinkRepo,
+            Self::Capture,
+            Self::DeleteWorktree,
+            Self::Done,
+            Self::Pause,
+            Self::Archive,
+            Self::CopyCd,
+            Self::Resume,
+            Self::Abandon,
+        ]
+    }
+
+    pub(crate) fn config_key(self) -> &'static str {
+        match self {
+            Self::OpenClaude => "open_claude",
+            Self::OpenNvim => "open_nvim",
+            Self::NewBranchWorktree => "new_branch_worktree",
+            Self::ExistingBranchWorktree => "existing_branch_worktree",
+            Self::LinkCurrent => "link_current",
+            Self::UnlinkRepo => "unlink_repo",
+            Self::Capture => "capture",
+            Self::DeleteWorktree => "delete_worktree",
+            Self::Done => "done",
+            Self::Pause => "pause",
+            Self::Archive => "archive",
+            Self::CopyCd => "copy_cd",
+            Self::Resume => "resume",
+            Self::Abandon => "abandon",
+        }
+    }
+
+    fn default_binding(self) -> Option<KeyBinding> {
+        match self {
+            Self::OpenClaude => Some(KeyBinding::plain('c')),
+            Self::OpenNvim => Some(KeyBinding::plain('n')),
+            Self::NewBranchWorktree => Some(KeyBinding::plain('b')),
+            Self::ExistingBranchWorktree => Some(KeyBinding::plain('w')),
+            Self::LinkCurrent => Some(KeyBinding::plain('l')),
+            Self::UnlinkRepo => Some(KeyBinding::plain('u')),
+            Self::Capture => Some(KeyBinding::plain('t')),
+            Self::DeleteWorktree => Some(KeyBinding::plain('d')),
+            Self::Done => Some(KeyBinding::plain('f')),
+            Self::Pause => Some(KeyBinding::plain('p')),
+            Self::Archive => Some(KeyBinding::plain('x')),
+            Self::CopyCd | Self::Resume | Self::Abandon => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -362,6 +425,15 @@ enum BindingCode {
 struct ConfigFile {
     #[serde(default)]
     shortcuts: ShortcutOverrides,
+    #[serde(default)]
+    actions: ActionOverrides,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct ActionOverrides {
+    order: Option<Vec<TuiAction>>,
+    disabled: Vec<TuiAction>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -379,6 +451,9 @@ struct ShortcutOverrides {
     done: Option<String>,
     pause: Option<String>,
     archive: Option<String>,
+    copy_cd: Option<String>,
+    resume: Option<String>,
+    abandon: Option<String>,
     insert_mode: Option<String>,
     normal_mode: Option<String>,
 }
@@ -390,13 +465,40 @@ fn apply_key(target: &mut KeyBinding, value: Option<String>, field: &str) -> Res
     Ok(())
 }
 
-fn validate_unique<const N: usize>(
-    mode: &str,
-    bindings: [(&'static str, KeyBinding); N],
-) -> Result<()> {
+fn parse_optional_action_binding(value: &str) -> Result<Option<KeyBinding>> {
+    let raw = value.trim();
+    if raw.eq_ignore_ascii_case("none") || raw.eq_ignore_ascii_case("disabled") {
+        return Ok(None);
+    }
+    Ok(Some(KeyBinding::parse(raw)?))
+}
+
+fn resolve_action_order(actions: ActionOverrides) -> Result<Vec<TuiAction>> {
+    let mut resolved = actions.order.unwrap_or_else(|| TuiAction::all().to_vec());
+    validate_action_list("actions.order", &resolved)?;
+    validate_action_list("actions.disabled", &actions.disabled)?;
+    resolved.retain(|action| !actions.disabled.contains(action));
+    Ok(resolved)
+}
+
+fn validate_action_list(field: &str, actions: &[TuiAction]) -> Result<()> {
+    let mut seen = HashMap::new();
+    for action in actions {
+        if let Some(previous) = seen.insert(*action, action.config_key()) {
+            bail!(
+                "{field} contains duplicate action `{}` and `{}`",
+                previous,
+                action.config_key()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique(mode: &str, bindings: Vec<(String, KeyBinding)>) -> Result<()> {
     let mut seen = HashMap::new();
     for (name, binding) in bindings {
-        if let Some(previous) = seen.insert(binding, name) {
+        if let Some(previous) = seen.insert(binding, name.clone()) {
             bail!(
                 "{mode} shortcut `{}` is assigned to both `{previous}` and `{name}`",
                 binding.display()
@@ -424,19 +526,19 @@ mod tests {
 
         assert_eq!(
             config.normal_command(key('c')),
-            Some(NormalShortcut::Action(ShortcutAction::OpenClaude))
+            Some(NormalShortcut::Action(TuiAction::OpenClaude))
         );
         assert_eq!(
             config.normal_command(key('n')),
-            Some(NormalShortcut::Action(ShortcutAction::OpenNvim))
+            Some(NormalShortcut::Action(TuiAction::OpenNvim))
         );
         assert_eq!(
             config.normal_command(key('b')),
-            Some(NormalShortcut::Action(ShortcutAction::NewBranchWorktree))
+            Some(NormalShortcut::Action(TuiAction::NewBranchWorktree))
         );
         assert_eq!(
             config.normal_command(key('t')),
-            Some(NormalShortcut::Action(ShortcutAction::Capture))
+            Some(NormalShortcut::Action(TuiAction::Capture))
         );
         assert_eq!(
             config.normal_command(key('a')),
@@ -470,7 +572,7 @@ mod tests {
 
         assert_eq!(
             config.normal_command(key('o')),
-            Some(NormalShortcut::Action(ShortcutAction::OpenClaude))
+            Some(NormalShortcut::Action(TuiAction::OpenClaude))
         );
         assert_eq!(
             config.normal_command(key('i')),
@@ -494,5 +596,42 @@ mod tests {
         .to_string();
 
         assert!(error.contains("normal mode shortcut `N`"));
+    }
+
+    #[test]
+    fn toml_configures_action_order_and_disabled_actions() {
+        let config = ShortcutConfig::from_toml(
+            r#"
+            [actions]
+            order = ["pause", "copy_cd", "open_claude"]
+            disabled = ["open_claude"]
+
+            [shortcuts]
+            copy_cd = "y"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.actions(), &[TuiAction::Pause, TuiAction::CopyCd]);
+        assert_eq!(
+            config.normal_command(key('y')),
+            Some(NormalShortcut::Action(TuiAction::CopyCd))
+        );
+        assert_eq!(config.normal_command(key('c')), None);
+    }
+
+    #[test]
+    fn none_disables_action_shortcut_without_hiding_action() {
+        let config = ShortcutConfig::from_toml(
+            r#"
+            [shortcuts]
+            open_claude = "none"
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.actions().contains(&TuiAction::OpenClaude));
+        assert_eq!(config.binding_for_action(TuiAction::OpenClaude), None);
+        assert_eq!(config.normal_command(key('c')), None);
     }
 }
