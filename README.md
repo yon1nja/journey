@@ -18,6 +18,19 @@ Configuration is intentionally simple today: action order, disabled actions, and
 
 ## Installation
 
+With Homebrew:
+
+```sh
+brew install yon1nja/tap/journey
+```
+
+Alternatively:
+
+```sh
+brew tap yon1nja/tap
+brew install journey
+```
+
 From source:
 
 ```sh
