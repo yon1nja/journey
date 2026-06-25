@@ -3,8 +3,6 @@
 **Context persistence for engineering efforts.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Crates.io](https://img.shields.io/crates/v/journey.svg)](https://crates.io/crates/journey)
-[![Build Status](https://github.com/yon1nja/journey/actions/workflows/ci.yml/badge.svg)](https://github.com/yon1nja/journey/actions)
 
 Journey gives each engineering effort a durable folder on disk with metadata, a short description, linked git worktrees, effort-local docs, and lifecycle status. It is intentionally not a task manager, checkpoint system, agent orchestrator, or replacement for git — it preserves context around the work while leaving notes, plans, decisions, and version control to the tools you already use.
 
