@@ -158,11 +158,12 @@ struct JourneyApp {
     shortcuts: ShortcutConfig,
     details_scroll: usize,
     details_viewport_height: usize,
+    doc_tab_index: usize,
     action_selected: usize,
     action_state: ListState,
     dialog: Dialog,
     notice: Option<Notice>,
-    readme_cache: ReadmeRenderCache,
+    doc_render_cache: DocRenderCache,
     output: Option<AppOutput>,
     should_quit: bool,
 }
@@ -191,11 +192,12 @@ impl JourneyApp {
             shortcuts: ShortcutConfig::load(home)?,
             details_scroll: 0,
             details_viewport_height: 1,
+            doc_tab_index: 0,
             action_selected: 0,
             action_state: ListState::default(),
             dialog: Dialog::None,
             notice: None,
-            readme_cache: ReadmeRenderCache::default(),
+            doc_render_cache: DocRenderCache::default(),
             output: None,
             should_quit: false,
         };
@@ -477,7 +479,40 @@ impl JourneyApp {
 
     fn handle_details_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Left => self.focus = Focus::Journeys,
+            KeyCode::Esc => self.focus = Focus::Journeys,
+            KeyCode::Left => {
+                if self.doc_tab_index > 0 {
+                    self.doc_tab_index -= 1;
+                    self.details_scroll = 0;
+                } else {
+                    self.focus = Focus::Journeys;
+                }
+            }
+            KeyCode::Right => {
+                let tab_count = self.doc_tab_count();
+                if tab_count > 0 && self.doc_tab_index < tab_count - 1 {
+                    self.doc_tab_index += 1;
+                    self.details_scroll = 0;
+                }
+            }
+            KeyCode::Tab => {
+                let tab_count = self.doc_tab_count();
+                if tab_count > 0 {
+                    self.doc_tab_index = (self.doc_tab_index + 1) % tab_count;
+                    self.details_scroll = 0;
+                }
+            }
+            KeyCode::BackTab => {
+                let tab_count = self.doc_tab_count();
+                if tab_count > 0 {
+                    self.doc_tab_index = if self.doc_tab_index == 0 {
+                        tab_count - 1
+                    } else {
+                        self.doc_tab_index - 1
+                    };
+                    self.details_scroll = 0;
+                }
+            }
             KeyCode::Char('q') if key.modifiers.is_empty() => self.focus = Focus::Journeys,
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.reload_with_notice();
@@ -1100,6 +1135,15 @@ impl JourneyApp {
 
     fn reset_details_scroll(&mut self) {
         self.details_scroll = 0;
+        self.doc_tab_index = 0;
+    }
+
+    fn doc_tab_count(&self) -> usize {
+        let Some(entry) = self.selected_entry() else {
+            return 0;
+        };
+        let journey_path = storage::journey_dir(&self.home, &entry.id);
+        discover_doc_tabs(&journey_path).len()
     }
 
     fn details_page_step(&self) -> usize {
@@ -1290,37 +1334,120 @@ fn render_details_pane(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect, 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines = detail_lines(app);
-    let mut content_area = inner;
-    let viewport_height = usize::from(content_area.height);
-    let mut content_height = wrapped_line_count(&lines, content_area.width);
-    let is_scrollable = content_height > viewport_height;
-    if is_scrollable && content_area.width > 1 {
-        content_area.width = content_area.width.saturating_sub(1);
-        content_height = wrapped_line_count(&lines, content_area.width);
+    let meta = metadata_lines(app);
+
+    let journey_path = app
+        .selected_entry()
+        .map(|e| storage::journey_dir(&app.home, &e.id));
+    let tabs = journey_path
+        .as_deref()
+        .map(discover_doc_tabs)
+        .unwrap_or_default();
+
+    if tabs.is_empty() {
+        let mut content_area = inner;
+        let mut content_height = wrapped_line_count(&meta, content_area.width);
+        let viewport_height = usize::from(content_area.height);
+        let is_scrollable = content_height > viewport_height;
+        if is_scrollable && content_area.width > 1 {
+            content_area.width = content_area.width.saturating_sub(1);
+            content_height = wrapped_line_count(&meta, content_area.width);
+        }
+        app.details_viewport_height = usize::from(content_area.height).max(1);
+        let max_scroll = content_height.saturating_sub(app.details_viewport_height);
+        app.details_scroll = app.details_scroll.min(max_scroll);
+        frame.render_widget(
+            Paragraph::new(Text::from(meta))
+                .wrap(Wrap { trim: false })
+                .scroll((scroll_offset(app.details_scroll), 0)),
+            content_area,
+        );
+        render_details_scrollbar(
+            frame,
+            inner,
+            app.details_scroll,
+            app.details_viewport_height,
+            max_scroll,
+            focused,
+        );
+        return;
     }
 
-    app.details_viewport_height = usize::from(content_area.height).max(1);
+    let meta_height = wrapped_line_count(&meta, inner.width) as u16;
+    // ponytail: +1 blank line between metadata and tab bar, +1 separator below tab bar
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(meta_height + 1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(meta)).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let tab_line = tab_bar_line(&tabs, app.doc_tab_index, usize::from(chunks[1].width));
+    frame.render_widget(Paragraph::new(Text::from(vec![tab_line])), chunks[1]);
+
+    let sep = "\u{2500}".repeat(usize::from(chunks[2].width));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(sep, dim()))),
+        chunks[2],
+    );
+
+    let doc_lines = doc_content_lines(app, &tabs);
+    let mut doc_area = chunks[3];
+    let mut content_height = wrapped_line_count(&doc_lines, doc_area.width);
+    let viewport_height = usize::from(doc_area.height);
+    let is_scrollable = content_height > viewport_height;
+    if is_scrollable && doc_area.width > 1 {
+        doc_area.width = doc_area.width.saturating_sub(1);
+        content_height = wrapped_line_count(&doc_lines, doc_area.width);
+    }
+
+    app.details_viewport_height = usize::from(doc_area.height).max(1);
     let max_scroll = content_height.saturating_sub(app.details_viewport_height);
     app.details_scroll = app.details_scroll.min(max_scroll);
 
     frame.render_widget(
-        Paragraph::new(Text::from(lines))
+        Paragraph::new(Text::from(doc_lines))
             .wrap(Wrap { trim: false })
             .scroll((scroll_offset(app.details_scroll), 0)),
-        content_area,
+        doc_area,
     );
 
-    if max_scroll > 0 && inner.width > 0 && inner.height > 0 {
+    render_details_scrollbar(
+        frame,
+        chunks[3],
+        app.details_scroll,
+        app.details_viewport_height,
+        max_scroll,
+        focused,
+    );
+}
+
+fn render_details_scrollbar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    scroll: usize,
+    viewport_height: usize,
+    max_scroll: usize,
+    focused: bool,
+) {
+    if max_scroll > 0 && area.width > 0 && area.height > 0 {
         let scrollbar_area = Rect {
-            x: inner.x + inner.width.saturating_sub(1),
-            y: inner.y,
+            x: area.x + area.width.saturating_sub(1),
+            y: area.y,
             width: 1,
-            height: inner.height,
+            height: area.height,
         };
         let mut scrollbar_state = ScrollbarState::new(details_scrollbar_content_length(max_scroll))
-            .position(app.details_scroll)
-            .viewport_content_length(app.details_viewport_height);
+            .position(scroll)
+            .viewport_content_length(viewport_height);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -1400,7 +1527,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         InputMode::Normal => match app.focus {
             Focus::Journeys => normal_help(app),
             Focus::Details => {
-                "NORMAL  Up/Down scroll  PgUp/PgDn page  Left/Esc back  Enter actions".to_string()
+                "NORMAL  Tab/S-Tab switch doc  Up/Down scroll  Esc back  Enter actions".to_string()
             }
             Focus::Actions => {
                 format!(
@@ -1784,7 +1911,7 @@ fn render_input_dialog(
     );
 }
 
-fn detail_lines(app: &mut JourneyApp) -> Vec<Line<'static>> {
+fn metadata_lines(app: &JourneyApp) -> Vec<Line<'static>> {
     let Some(entry) = app.selected_entry() else {
         return vec![
             Line::from(Span::styled("No Journeys", accent())),
@@ -1816,10 +1943,100 @@ fn detail_lines(app: &mut JourneyApp) -> Vec<Line<'static>> {
     lines.push(label_value("events:", event_count));
     lines.push(Line::from(""));
     lines.extend(repo_lines(&app.home, &entry.id));
-    lines.push(Line::from(""));
-    lines.extend(doc_lines(&journey_path));
-    lines.extend(readme_lines(&journey_path, &mut app.readme_cache));
     lines
+}
+
+fn tab_bar_line(tabs: &[DocTab], selected: usize, width: usize) -> Line<'static> {
+    let sep = " \u{2502} ";
+    // Build label positions so we can scroll to keep the selected tab visible
+    let mut positions: Vec<(usize, usize)> = Vec::new(); // (start, end) for each tab
+    let mut pos = 1usize; // leading space
+    for (i, tab) in tabs.iter().enumerate() {
+        if i > 0 {
+            pos += sep.chars().count();
+        }
+        let start = pos;
+        pos += tab.label.len();
+        positions.push((start, pos));
+    }
+    let total_width = pos + 1; // trailing space
+
+    // Determine horizontal scroll offset to keep selected tab visible
+    let scroll = if total_width <= width {
+        0
+    } else if let Some(&(_start, end)) = positions.get(selected) {
+        // Ensure the selected tab fits in the viewport
+        if end > width {
+            // Scroll right so the selected tab's end is at the right edge
+            (end.saturating_sub(width)).min(total_width.saturating_sub(width))
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let mut spans = Vec::new();
+    let mut col = 0usize;
+
+    let push_visible =
+        |text: String, style: Style, col: &mut usize, spans: &mut Vec<Span<'static>>| {
+            let len = text.len();
+            let start = *col;
+            let end = start + len;
+            *col = end;
+
+            if end <= scroll || start >= scroll + width {
+                return; // entirely outside viewport
+            }
+
+            let visible_start = scroll.saturating_sub(start);
+            let visible_end = if end > scroll + width {
+                scroll + width - start
+            } else {
+                len
+            };
+            let visible: String = text
+                .chars()
+                .skip(visible_start)
+                .take(visible_end - visible_start)
+                .collect();
+            if !visible.is_empty() {
+                spans.push(Span::styled(visible, style));
+            }
+        };
+
+    push_visible(" ".to_string(), Style::default(), &mut col, &mut spans);
+    for (i, tab) in tabs.iter().enumerate() {
+        if i > 0 {
+            push_visible(sep.to_string(), dim(), &mut col, &mut spans);
+        }
+        let style = if i == selected {
+            accent().add_modifier(Modifier::BOLD)
+        } else {
+            dim()
+        };
+        push_visible(tab.label.clone(), style, &mut col, &mut spans);
+    }
+    push_visible(" ".to_string(), Style::default(), &mut col, &mut spans);
+
+    // Show scroll indicators
+    if scroll > 0 {
+        spans.insert(0, Span::styled("\u{25c2}", dim()));
+    }
+    if scroll + width < total_width {
+        spans.push(Span::styled("\u{25b8}", dim()));
+    }
+
+    Line::from(spans)
+}
+
+fn doc_content_lines(app: &mut JourneyApp, tabs: &[DocTab]) -> Vec<Line<'static>> {
+    if tabs.is_empty() {
+        return Vec::new();
+    }
+    let idx = app.doc_tab_index.min(tabs.len().saturating_sub(1));
+    app.doc_render_cache.lines(&tabs[idx].path)
 }
 
 fn repo_lines(home: &Path, id: &str) -> Vec<Line<'static>> {
@@ -1850,92 +2067,70 @@ fn repo_lines(home: &Path, id: &str) -> Vec<Line<'static>> {
     lines
 }
 
-fn doc_lines(journey_path: &Path) -> Vec<Line<'static>> {
-    let docs_dir = journey_path.join(storage::DOCS_DIR);
-    let Ok(entries) = fs::read_dir(&docs_dir) else {
-        return vec![Line::from(vec![
-            Span::styled("docs:", dim()),
-            Span::raw(" none"),
-        ])];
-    };
-
-    let mut docs = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.is_file() {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    docs.sort();
-
-    if docs.is_empty() {
-        return vec![Line::from(vec![
-            Span::styled("docs:", dim()),
-            Span::raw(" none"),
-        ])];
-    }
-
-    let mut lines = vec![Line::from(Span::styled("docs:", dim()))];
-    for doc in docs.iter().take(8) {
-        lines.push(Line::from(vec![
-            Span::raw("- "),
-            Span::styled(format!("docs/{doc}"), accent()),
-        ]));
-    }
-    if docs.len() > 8 {
-        lines.push(Line::from(Span::styled(
-            format!("- ... {} more", docs.len() - 8),
-            dim(),
-        )));
-    }
-    lines
+struct DocTab {
+    label: String,
+    path: PathBuf,
 }
 
-fn readme_lines(journey_path: &Path, readme_cache: &mut ReadmeRenderCache) -> Vec<Line<'static>> {
-    let path = journey_path.join(storage::README_FILE);
-    let Ok(metadata) = fs::metadata(&path) else {
-        return Vec::new();
-    };
-    if !metadata.is_file() {
-        return Vec::new();
+fn discover_doc_tabs(journey_path: &Path) -> Vec<DocTab> {
+    let mut tabs = Vec::new();
+
+    let readme_path = journey_path.join(storage::README_FILE);
+    if readme_path.is_file() {
+        tabs.push(DocTab {
+            label: "README".to_string(),
+            path: readme_path,
+        });
     }
 
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(Span::styled("README.md:", dim())),
-    ];
-    lines.extend(readme_cache.lines(&path, &metadata));
-    lines
+    let docs_dir = journey_path.join(storage::DOCS_DIR);
+    if let Ok(entries) = fs::read_dir(&docs_dir) {
+        let mut doc_files: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_file())
+            .collect();
+        doc_files.sort_by_key(|e| e.file_name());
+
+        for entry in doc_files {
+            let path = entry.path();
+            let label = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            tabs.push(DocTab { label, path });
+        }
+    }
+
+    tabs
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct ReadmeCacheKey {
+struct DocCacheKey {
     path: PathBuf,
     modified: Option<SystemTime>,
     len: u64,
 }
 
 #[derive(Default)]
-struct ReadmeRenderCache {
-    key: Option<ReadmeCacheKey>,
+struct DocRenderCache {
+    key: Option<DocCacheKey>,
     lines: Vec<Line<'static>>,
 }
 
-impl ReadmeRenderCache {
-    fn lines(&mut self, path: &Path, metadata: &fs::Metadata) -> Vec<Line<'static>> {
-        let key = ReadmeCacheKey {
+impl DocRenderCache {
+    fn lines(&mut self, path: &Path) -> Vec<Line<'static>> {
+        let Ok(metadata) = fs::metadata(path) else {
+            return vec![Line::from(Span::styled("unavailable", dim()))];
+        };
+
+        let key = DocCacheKey {
             path: path.to_path_buf(),
             modified: metadata.modified().ok(),
             len: metadata.len(),
         };
 
         if self.key.as_ref() != Some(&key) {
-            self.lines = render_readme_file(path);
+            self.lines = render_doc_file(path);
             self.key = Some(key);
         }
 
@@ -1943,7 +2138,7 @@ impl ReadmeRenderCache {
     }
 }
 
-fn render_readme_file(path: &Path) -> Vec<Line<'static>> {
+fn render_doc_file(path: &Path) -> Vec<Line<'static>> {
     match fs::read_to_string(path) {
         Ok(content) if content.trim().is_empty() => {
             vec![Line::from(Span::styled("(empty)", dim()))]
