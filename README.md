@@ -4,6 +4,10 @@ Journey is a local context container for engineering work. It gives one effort a
 
 Journey is intentionally not a task manager, checkpoint system, agent orchestrator, or replacement for git. It preserves context around the work while leaving notes, plans, decisions, and version control to the tools and files you already use.
 
+> **Active development notice**
+>
+> Journey is under active development and may contain bugs, rough edges, or behavior that changes between releases. Issue reports, bug reports, and feedback are very welcome.
+
 ## Philosophy
 
 Journey's philosophy is to provide the smallest durable container for an engineering effort while staying deliberately unopinionated about the workflow inside it.

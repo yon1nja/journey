@@ -113,6 +113,7 @@ The terminal UI should stay aligned with the current app style:
 - Use `rg` for searching.
 - Be careful with dirty worktrees. Do not revert unrelated changes.
 - Avoid destructive git commands unless explicitly requested.
+- Use conventional commit messages for commits.
 - If adding dependencies, justify why the existing standard library, `clap`, `ratatui`, `crossterm`, and git CLI are not enough.
 
 ## Verification
