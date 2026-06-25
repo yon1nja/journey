@@ -373,13 +373,3 @@ Planned features from the current Journey docs:
 - Extended action configuration, including user-defined shell or bash scripts that can appear as Journey actions in the interactive interface.
 
 The current implementation already creates `CLAUDE.md` for new Journeys and includes document tabs in the Details pane.
-
-## Homebrew Publishing Notes
-
-For Homebrew, Journey should be shipped as a source-built Rust formula with a stable tagged release tarball.
-
-A private tap is the fastest publishing path. Homebrew taps are external Git repositories, and GitHub-hosted taps are conventionally named `homebrew-<name>`. A tap formula can live under `Formula/`, `HomebrewFormula/`, or the tap root, with `Formula/` recommended for organization.
-
-For `homebrew/core`, Journey needs a stable tagged version, homepage, SPDX license, source tarball checksum, formula test, and passing `brew audit --new --formula journey`. Because `homebrew/core` applies notability and self-submission requirements, early releases should probably start in a project tap.
-
-See `docs/homebrew-publishing.md` for the publish checklist and example formula skeleton.
