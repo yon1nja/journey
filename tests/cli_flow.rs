@@ -118,10 +118,19 @@ fn full_cli_flow_links_docs_and_worktrees_without_generated_state() {
     assert!(created.contains("`test-journey`"));
 
     let agents = fs::read_to_string(home.join("journeys/test-journey/AGENTS.md")).unwrap();
-    assert!(agents.contains("README.md"));
-    assert!(agents.contains("journey readme new"));
-    assert!(agents.contains("journey capture <text>"));
-    assert!(agents.contains("interactive Details pane"));
+    assert!(agents.contains(
+        home.join("JOURNEY-AGENTS.md")
+            .to_str()
+            .expect("path should be UTF-8")
+    ));
+    assert!(agents.contains("journey.yaml"));
+    assert!(!agents.contains("journey capture <text>"));
+
+    let journey_agents = fs::read_to_string(home.join("JOURNEY-AGENTS.md")).unwrap();
+    assert!(journey_agents.contains("README.md"));
+    assert!(journey_agents.contains("journey readme new"));
+    assert!(journey_agents.contains("journey capture <text>"));
+    assert!(journey_agents.contains("interactive Details pane"));
 
     let doc_path = journey(
         &home,

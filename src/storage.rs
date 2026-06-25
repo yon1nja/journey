@@ -19,12 +19,13 @@ pub const JOURNAL_FILE: &str = "journal.jsonl";
 pub const README_FILE: &str = "README.md";
 pub const DOCS_DIR: &str = "docs";
 pub const WORKTREES_DIR: &str = "worktrees";
+pub const JOURNEY_AGENTS_FILE: &str = "JOURNEY-AGENTS.md";
 pub const AGENTS_FILE: &str = "AGENTS.md";
 pub const CLAUDE_MD_FILE: &str = "CLAUDE.md";
 
 const CLAUDE_MD_TEMPLATE: &str = "@AGENTS.md\n";
 
-const AGENTS_TEMPLATE: &str = r#"# AGENTS.md
+const JOURNEY_AGENTS_TEMPLATE: &str = r#"# JOURNEY-AGENTS.md
 
 You are working inside a Journey — a local context container for an engineering effort.
 
@@ -96,6 +97,9 @@ pub fn journey_home() -> Result<PathBuf> {
 pub fn ensure_home(home: &Path) -> Result<()> {
     fs::create_dir_all(home.join(JOURNEYS_DIR))
         .with_context(|| format!("failed to create {}", home.join(JOURNEYS_DIR).display()))?;
+    if !home.join(JOURNEY_AGENTS_FILE).exists() {
+        write_string_atomic(&home.join(JOURNEY_AGENTS_FILE), JOURNEY_AGENTS_TEMPLATE)?;
+    }
     if !home.join(config::CONFIG_FILE).exists() {
         write_string_atomic(&home.join(config::CONFIG_FILE), config::DEFAULT_CONFIG_TOML)?;
     }
@@ -212,9 +216,9 @@ pub fn create_journey(
         .append(true)
         .open(path.join(JOURNAL_FILE))
         .with_context(|| format!("failed to create {}", path.join(JOURNAL_FILE).display()))?;
-    fs::write(path.join(AGENTS_FILE), AGENTS_TEMPLATE)
+    write_string_atomic(&path.join(AGENTS_FILE), &agents_template(home))
         .with_context(|| format!("failed to create {}", path.join(AGENTS_FILE).display()))?;
-    fs::write(path.join(CLAUDE_MD_FILE), CLAUDE_MD_TEMPLATE)
+    write_string_atomic(&path.join(CLAUDE_MD_FILE), CLAUDE_MD_TEMPLATE)
         .with_context(|| format!("failed to create {}", path.join(CLAUDE_MD_FILE).display()))?;
 
     index.journeys.push(IndexEntry {
@@ -233,6 +237,13 @@ pub fn create_journey(
         path,
         journey,
     })
+}
+
+fn agents_template(home: &Path) -> String {
+    format!(
+        "# AGENTS.md\n\n@{}\n\nRead the shared Journey guidance first, then read `journey.yaml` in this directory to understand this effort.\n",
+        home.join(JOURNEY_AGENTS_FILE).display()
+    )
 }
 
 pub fn update_index_entry(home: &Path, journey: &JourneyFile, now: &str) -> Result<()> {
@@ -663,6 +674,10 @@ mod tests {
         let home = temp.path().join("journey-home");
 
         ensure_home(&home).unwrap();
+
+        let agents = fs::read_to_string(home.join(JOURNEY_AGENTS_FILE)).unwrap();
+        assert!(agents.contains("# JOURNEY-AGENTS.md"));
+        assert!(agents.contains("journey capture <text>"));
 
         let config = fs::read_to_string(home.join(config::CONFIG_FILE)).unwrap();
         assert!(config.contains("[shortcuts]"));

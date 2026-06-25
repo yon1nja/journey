@@ -38,12 +38,15 @@ Journey stores:
 
 - `journey.yaml`: the Journey id, title, optional description, status, creation time, and linked repos.
 - `journal.jsonl`: an append-only operational log for link, unlink, and status changes.
+- `AGENTS.md`: a short pointer to the shared Journey agent guidance.
+- `CLAUDE.md`: a Claude-specific pointer to `AGENTS.md`.
 - `README.md`: an optional top-level overview for the Journey.
 - `docs/`: optional user-owned Markdown files.
 - `worktrees/`: symlinks to attached git worktrees.
 
 Global state under `JOURNEY_HOME` includes:
 
+- `JOURNEY-AGENTS.md`: shared coding-agent guidance for all Journeys under this home.
 - `index.yaml`: the Journey registry used by list and TUI views.
 - `worktree-index.yaml`: ownership mapping from canonical worktree paths to active or paused Journeys.
 - `config.toml`: interactive action ordering and shortcuts.
@@ -157,7 +160,7 @@ journey new <title> [--description <text>]
 
 Creates a Journey without opening the interactive app. The id is derived from the title and made unique if needed.
 
-New Journeys include `journey.yaml`, `journal.jsonl`, `AGENTS.md`, and `CLAUDE.md`. `AGENTS.md` explains the Journey folder contract for coding agents, and `CLAUDE.md` references it.
+New Journeys include `journey.yaml`, `journal.jsonl`, `AGENTS.md`, and `CLAUDE.md`. `AGENTS.md` points coding agents to the shared `JOURNEY_HOME/JOURNEY-AGENTS.md` guidance, and `CLAUDE.md` references `AGENTS.md`.
 
 ### `journey list`
 
@@ -329,6 +332,9 @@ Journey-owned structured files:
 
 - `journey.yaml`
 - `journal.jsonl`
+- Journey `AGENTS.md`
+- Journey `CLAUDE.md`
+- global `JOURNEY-AGENTS.md`
 - global `index.yaml`
 - global `worktree-index.yaml`
 - global `config.toml`
