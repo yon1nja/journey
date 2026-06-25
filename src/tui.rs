@@ -30,7 +30,7 @@ use syntect::highlighting::{
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::app;
-use crate::config::{InsertShortcut, NormalShortcut, ShortcutAction, ShortcutConfig};
+use crate::config::{InsertShortcut, NormalShortcut, ShortcutConfig, TuiAction};
 use crate::events;
 use crate::git;
 use crate::models::{IndexEntry, JourneyStatus, RepoRef};
@@ -66,22 +66,6 @@ fn terminal_writer() -> TerminalWriter {
         TerminalWriter::Stderr(io::stderr())
     }
 }
-
-const ACTIONS: [JourneyAction; 13] = [
-    JourneyAction::OpenClaude,
-    JourneyAction::OpenNvim,
-    JourneyAction::Worktree,
-    JourneyAction::ExistingBranchWorktree,
-    JourneyAction::Link,
-    JourneyAction::Unlink,
-    JourneyAction::DeleteWorktree,
-    JourneyAction::Done,
-    JourneyAction::Pause,
-    JourneyAction::Archive,
-    JourneyAction::CopyCd,
-    JourneyAction::Resume,
-    JourneyAction::Abandon,
-];
 
 const ACCENT: Color = Color::Indexed(75);
 const ACCENT_TEXT: Color = Color::Black;
@@ -504,7 +488,8 @@ impl JourneyApp {
                 self.sync_action_state();
             }
             KeyCode::Down => {
-                self.action_selected = (self.action_selected + 1).min(ACTIONS.len() - 1);
+                let max = self.shortcuts.actions().len().saturating_sub(1);
+                self.action_selected = (self.action_selected + 1).min(max);
                 self.sync_action_state();
             }
             KeyCode::Enter => self.execute_selected_action(),
@@ -748,32 +733,25 @@ impl JourneyApp {
     }
 
     fn execute_selected_action(&mut self) {
-        self.execute_action(ACTIONS[self.action_selected]);
+        let Some(action) = self.shortcuts.actions().get(self.action_selected).copied() else {
+            self.notice_error("no actions configured");
+            return;
+        };
+        self.execute_action(action);
     }
 
-    fn execute_shortcut_action(&mut self, action: ShortcutAction) {
-        self.execute_action(match action {
-            ShortcutAction::OpenClaude => JourneyAction::OpenClaude,
-            ShortcutAction::OpenNvim => JourneyAction::OpenNvim,
-            ShortcutAction::NewBranchWorktree => JourneyAction::Worktree,
-            ShortcutAction::ExistingBranchWorktree => JourneyAction::ExistingBranchWorktree,
-            ShortcutAction::LinkCurrent => JourneyAction::Link,
-            ShortcutAction::UnlinkRepo => JourneyAction::Unlink,
-            ShortcutAction::DeleteWorktree => JourneyAction::DeleteWorktree,
-            ShortcutAction::Done => JourneyAction::Done,
-            ShortcutAction::Pause => JourneyAction::Pause,
-            ShortcutAction::Archive => JourneyAction::Archive,
-        });
+    fn execute_shortcut_action(&mut self, action: TuiAction) {
+        self.execute_action(action);
     }
 
-    fn execute_action(&mut self, action: JourneyAction) {
+    fn execute_action(&mut self, action: TuiAction) {
         let Some(journey_id) = self.selected_id() else {
             self.notice_error("no Journey selected");
             return;
         };
 
         match action {
-            JourneyAction::CopyCd => {
+            TuiAction::CopyCd => {
                 let dir = storage::journey_dir(&self.home, &journey_id);
                 let command = cd_command(&dir);
                 match copy_to_clipboard(&command) {
@@ -781,25 +759,25 @@ impl JourneyApp {
                     Err(err) => self.notice_error(format!("clipboard failed: {err}")),
                 }
             }
-            JourneyAction::OpenNvim => {
+            TuiAction::OpenNvim => {
                 self.output = Some(AppOutput::RunInJourney {
                     command: "nvim",
                     journey_path: storage::journey_dir(&self.home, &journey_id),
                 });
                 self.should_quit = true;
             }
-            JourneyAction::OpenClaude => {
+            TuiAction::OpenClaude => {
                 self.output = Some(AppOutput::RunInJourney {
                     command: "claude",
                     journey_path: storage::journey_dir(&self.home, &journey_id),
                 });
                 self.should_quit = true;
             }
-            JourneyAction::Resume => {
+            TuiAction::Resume => {
                 let result = app::resume(&self.home, &self.cwd, Some(&journey_id));
                 let _ = self.record_mutation(result, Some(journey_id));
             }
-            JourneyAction::Worktree => {
+            TuiAction::NewBranchWorktree => {
                 let default_branch = storage::slugify(&journey_id);
                 self.dialog = Dialog::WorktreeBranch {
                     journey_id,
@@ -807,18 +785,18 @@ impl JourneyApp {
                     default_branch,
                 };
             }
-            JourneyAction::ExistingBranchWorktree => {
+            TuiAction::ExistingBranchWorktree => {
                 self.open_existing_branch_dialog(journey_id);
             }
-            JourneyAction::Link => {
+            TuiAction::LinkCurrent => {
                 let result =
                     app::link_repo(&self.home, &self.cwd, Some(&journey_id), &self.cwd, None);
                 let _ = self.record_mutation(result, Some(journey_id));
             }
-            JourneyAction::Unlink => self.open_unlink_dialog(&journey_id),
-            JourneyAction::DeleteWorktree => self.open_delete_worktree_dialog(&journey_id),
-            JourneyAction::Done => self.open_done_dialog(&journey_id),
-            JourneyAction::Pause => {
+            TuiAction::UnlinkRepo => self.open_unlink_dialog(&journey_id),
+            TuiAction::DeleteWorktree => self.open_delete_worktree_dialog(&journey_id),
+            TuiAction::Done => self.open_done_dialog(&journey_id),
+            TuiAction::Pause => {
                 let result = app::set_status(
                     &self.home,
                     &self.cwd,
@@ -827,7 +805,7 @@ impl JourneyApp {
                 );
                 let _ = self.record_mutation(result, Some(journey_id));
             }
-            JourneyAction::Archive => {
+            TuiAction::Archive => {
                 let result = app::set_status(
                     &self.home,
                     &self.cwd,
@@ -836,7 +814,7 @@ impl JourneyApp {
                 );
                 let _ = self.record_mutation(result, Some(journey_id));
             }
-            JourneyAction::Abandon => {
+            TuiAction::Abandon => {
                 let result = app::set_status(
                     &self.home,
                     &self.cwd,
@@ -1089,6 +1067,14 @@ impl JourneyApp {
     }
 
     fn sync_action_state(&mut self) {
+        if self.shortcuts.actions().is_empty() {
+            self.action_state.select(None);
+            return;
+        }
+
+        self.action_selected = self
+            .action_selected
+            .min(self.shortcuts.actions().len().saturating_sub(1));
         self.action_state.select(Some(self.action_selected));
     }
 
@@ -1316,18 +1302,14 @@ fn details_scrollbar_content_length(max_scroll: usize) -> usize {
 }
 
 fn render_actions(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
-    let items = ACTIONS
+    let items = app
+        .shortcuts
+        .actions()
         .iter()
         .map(|action| {
             let mut spans = Vec::new();
-            if let Some(shortcut) = action.shortcut_action() {
-                spans.push(Span::styled(
-                    format!(
-                        "[{}] ",
-                        app.shortcuts.binding_for_action(shortcut).display()
-                    ),
-                    dim(),
-                ));
+            if let Some(shortcut) = app.shortcuts.binding_for_action(*action) {
+                spans.push(Span::styled(format!("[{}] ", shortcut.display()), dim()));
             }
             spans.extend([
                 Span::styled(action.label(), Style::default().fg(Color::White)),
@@ -1337,6 +1319,14 @@ fn render_actions(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
             ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
+    let items = if items.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No actions configured",
+            dim(),
+        )))]
+    } else {
+        items
+    };
     let block = Block::default()
         .title(" Actions ")
         .borders(Borders::ALL)
@@ -1387,41 +1377,18 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
 }
 
 fn normal_help(app: &JourneyApp) -> String {
-    format!(
-        "NORMAL  {} search  {} new  {} claude  {} nvim  {}/{} worktree  {}/{} link  {} delete  {} done  {} pause  {} archive  Esc/q quit",
-        app.shortcuts.insert_mode.display(),
-        app.shortcuts.new_journey.display(),
+    let mut parts = vec![
+        "NORMAL".to_string(),
+        format!("{} search", app.shortcuts.insert_mode.display()),
+        format!("{} new", app.shortcuts.new_journey.display()),
+    ];
+    parts.extend(app.shortcuts.actions().iter().filter_map(|action| {
         app.shortcuts
-            .binding_for_action(ShortcutAction::OpenClaude)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::OpenNvim)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::NewBranchWorktree)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::ExistingBranchWorktree)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::LinkCurrent)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::UnlinkRepo)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::DeleteWorktree)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::Done)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::Pause)
-            .display(),
-        app.shortcuts
-            .binding_for_action(ShortcutAction::Archive)
-            .display()
-    )
+            .binding_for_action(*action)
+            .map(|binding| format!("{} {}", binding.display(), action.help_label()))
+    }));
+    parts.push("Esc/q quit".to_string());
+    parts.join("  ")
 }
 
 fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
@@ -2599,73 +2566,58 @@ impl InputMode {
     }
 }
 
-#[derive(Clone, Copy)]
-enum JourneyAction {
-    CopyCd,
-    OpenNvim,
-    OpenClaude,
-    Resume,
-    Worktree,
-    ExistingBranchWorktree,
-    Link,
-    Unlink,
-    DeleteWorktree,
-    Done,
-    Pause,
-    Archive,
-    Abandon,
-}
-
-impl JourneyAction {
+impl TuiAction {
     fn label(self) -> &'static str {
         match self {
-            JourneyAction::CopyCd => "Copy cd to path",
-            JourneyAction::OpenNvim => "Open nvim in Journey folder",
-            JourneyAction::OpenClaude => "Open Claude Code in Journey folder",
-            JourneyAction::Resume => "Resume",
-            JourneyAction::Worktree => "New branch + worktree",
-            JourneyAction::ExistingBranchWorktree => "Existing branch + worktree",
-            JourneyAction::Link => "Link current worktree",
-            JourneyAction::Unlink => "Unlink a repo",
-            JourneyAction::DeleteWorktree => "Delete worktree",
-            JourneyAction::Done => "Done",
-            JourneyAction::Pause => "Pause",
-            JourneyAction::Archive => "Archive",
-            JourneyAction::Abandon => "Abandon",
+            TuiAction::CopyCd => "Copy cd to path",
+            TuiAction::OpenNvim => "Open nvim in Journey folder",
+            TuiAction::OpenClaude => "Open Claude Code in Journey folder",
+            TuiAction::Resume => "Resume",
+            TuiAction::NewBranchWorktree => "New branch + worktree",
+            TuiAction::ExistingBranchWorktree => "Existing branch + worktree",
+            TuiAction::LinkCurrent => "Link current worktree",
+            TuiAction::UnlinkRepo => "Unlink a repo",
+            TuiAction::DeleteWorktree => "Delete worktree",
+            TuiAction::Done => "Done",
+            TuiAction::Pause => "Pause",
+            TuiAction::Archive => "Archive",
+            TuiAction::Abandon => "Abandon",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
-            JourneyAction::CopyCd => "copy cd command",
-            JourneyAction::OpenNvim => "cd journey + run nvim",
-            JourneyAction::OpenClaude => "cd journey + run claude",
-            JourneyAction::Resume => "mark active",
-            JourneyAction::Worktree => "git worktree add -b",
-            JourneyAction::ExistingBranchWorktree => "select branch",
-            JourneyAction::Link => "attach cwd repo",
-            JourneyAction::Unlink => "detach linked repo",
-            JourneyAction::DeleteWorktree => "git remove + unlink",
-            JourneyAction::Done => "archive + remove worktrees",
-            JourneyAction::Pause => "lifecycle only",
-            JourneyAction::Archive => "release worktrees",
-            JourneyAction::Abandon => "release worktrees",
+            TuiAction::CopyCd => "copy cd command",
+            TuiAction::OpenNvim => "cd journey + run nvim",
+            TuiAction::OpenClaude => "cd journey + run claude",
+            TuiAction::Resume => "mark active",
+            TuiAction::NewBranchWorktree => "git worktree add -b",
+            TuiAction::ExistingBranchWorktree => "select branch",
+            TuiAction::LinkCurrent => "attach cwd repo",
+            TuiAction::UnlinkRepo => "detach linked repo",
+            TuiAction::DeleteWorktree => "git remove + unlink",
+            TuiAction::Done => "archive + remove worktrees",
+            TuiAction::Pause => "lifecycle only",
+            TuiAction::Archive => "release worktrees",
+            TuiAction::Abandon => "release worktrees",
         }
     }
 
-    fn shortcut_action(self) -> Option<ShortcutAction> {
+    fn help_label(self) -> &'static str {
         match self {
-            JourneyAction::OpenClaude => Some(ShortcutAction::OpenClaude),
-            JourneyAction::OpenNvim => Some(ShortcutAction::OpenNvim),
-            JourneyAction::Worktree => Some(ShortcutAction::NewBranchWorktree),
-            JourneyAction::ExistingBranchWorktree => Some(ShortcutAction::ExistingBranchWorktree),
-            JourneyAction::Link => Some(ShortcutAction::LinkCurrent),
-            JourneyAction::Unlink => Some(ShortcutAction::UnlinkRepo),
-            JourneyAction::DeleteWorktree => Some(ShortcutAction::DeleteWorktree),
-            JourneyAction::Done => Some(ShortcutAction::Done),
-            JourneyAction::Pause => Some(ShortcutAction::Pause),
-            JourneyAction::Archive => Some(ShortcutAction::Archive),
-            JourneyAction::CopyCd | JourneyAction::Resume | JourneyAction::Abandon => None,
+            TuiAction::CopyCd => "copy-cd",
+            TuiAction::OpenNvim => "nvim",
+            TuiAction::OpenClaude => "claude",
+            TuiAction::Resume => "resume",
+            TuiAction::NewBranchWorktree => "new-worktree",
+            TuiAction::ExistingBranchWorktree => "existing-worktree",
+            TuiAction::LinkCurrent => "link",
+            TuiAction::UnlinkRepo => "unlink",
+            TuiAction::DeleteWorktree => "delete",
+            TuiAction::Done => "done",
+            TuiAction::Pause => "pause",
+            TuiAction::Archive => "archive",
+            TuiAction::Abandon => "abandon",
         }
     }
 }
