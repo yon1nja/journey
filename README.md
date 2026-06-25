@@ -71,6 +71,12 @@ cargo run -- --help
 
 Persistent state defaults to `~/.journey`. Set `JOURNEY_HOME` to use a different directory.
 
+For faster terminal access, consider adding a short alias to your shell profile:
+
+```sh
+alias jy='journey'
+```
+
 ## Quick Start
 
 ```sh
