@@ -20,6 +20,9 @@ pub const README_FILE: &str = "README.md";
 pub const DOCS_DIR: &str = "docs";
 pub const WORKTREES_DIR: &str = "worktrees";
 pub const AGENTS_FILE: &str = "AGENTS.md";
+pub const CLAUDE_MD_FILE: &str = "CLAUDE.md";
+
+const CLAUDE_MD_TEMPLATE: &str = "@AGENTS.md\n";
 
 const AGENTS_TEMPLATE: &str = r#"# AGENTS.md
 
@@ -211,6 +214,8 @@ pub fn create_journey(
         .with_context(|| format!("failed to create {}", path.join(JOURNAL_FILE).display()))?;
     fs::write(path.join(AGENTS_FILE), AGENTS_TEMPLATE)
         .with_context(|| format!("failed to create {}", path.join(AGENTS_FILE).display()))?;
+    fs::write(path.join(CLAUDE_MD_FILE), CLAUDE_MD_TEMPLATE)
+        .with_context(|| format!("failed to create {}", path.join(CLAUDE_MD_FILE).display()))?;
 
     index.journeys.push(IndexEntry {
         id,
