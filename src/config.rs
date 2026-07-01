@@ -345,6 +345,13 @@ impl KeyBinding {
         }
     }
 
+    fn enter() -> Self {
+        Self {
+            code: BindingCode::Enter,
+            control: false,
+        }
+    }
+
     fn parse(value: &str) -> Result<Self> {
         let raw = value.trim();
         if raw.is_empty() {
@@ -363,6 +370,7 @@ impl KeyBinding {
 
         let code = match key {
             "esc" | "escape" => BindingCode::Esc,
+            "enter" | "return" => BindingCode::Enter,
             key => {
                 let mut chars = key.chars();
                 let Some(ch) = chars.next() else {
@@ -384,6 +392,7 @@ impl KeyBinding {
         let key = match self.code {
             BindingCode::Char(ch) => ch.to_ascii_uppercase().to_string(),
             BindingCode::Esc => "Esc".to_string(),
+            BindingCode::Enter => "Enter".to_string(),
         };
         if self.control {
             format!("Ctrl-{key}")
@@ -410,6 +419,7 @@ impl KeyBinding {
                 actual.eq_ignore_ascii_case(&expected)
             }
             (BindingCode::Esc, KeyCode::Esc) => true,
+            (BindingCode::Enter, KeyCode::Enter) => true,
             _ => false,
         }
     }
@@ -419,6 +429,7 @@ impl KeyBinding {
 enum BindingCode {
     Char(char),
     Esc,
+    Enter,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -633,5 +644,36 @@ mod tests {
         assert!(config.actions().contains(&TuiAction::OpenClaude));
         assert_eq!(config.binding_for_action(TuiAction::OpenClaude), None);
         assert_eq!(config.normal_command(key('c')), None);
+    }
+
+    #[test]
+    fn parses_enter_binding() {
+        let binding = KeyBinding::parse("enter").unwrap();
+        let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        assert!(binding.matches(event));
+        assert_eq!(binding.display(), "Enter");
+    }
+
+    #[test]
+    fn parses_return_as_enter() {
+        let binding = KeyBinding::parse("return").unwrap();
+        let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        assert!(binding.matches(event));
+        assert_eq!(binding.display(), "Enter");
+    }
+
+    #[test]
+    fn enter_does_not_match_other_keys() {
+        let binding = KeyBinding::parse("enter").unwrap();
+        assert!(!binding.matches(key('a')));
+        assert!(!binding.matches(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())));
+    }
+
+    #[test]
+    fn enter_constructor() {
+        let binding = KeyBinding::enter();
+        let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        assert!(binding.matches(event));
+        assert_eq!(binding.display(), "Enter");
     }
 }
