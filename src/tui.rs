@@ -30,7 +30,7 @@ use syntect::highlighting::{
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::app;
-use crate::config::{InsertShortcut, NormalShortcut, ShortcutConfig, TuiAction};
+use crate::config::{Command as ShortcutCommand, ShortcutConfig, TuiAction};
 use crate::events;
 use crate::git;
 use crate::models::{IndexEntry, JourneyStatus, RepoRef};
@@ -136,8 +136,7 @@ struct JourneyApp {
     query: String,
     selected: usize,
     table_state: TableState,
-    focus: Focus,
-    input_mode: InputMode,
+    screen: Screen,
     shortcuts: ShortcutConfig,
     details_scroll: usize,
     details_viewport_height: usize,
@@ -170,8 +169,7 @@ impl JourneyApp {
             query: String::new(),
             selected: 0,
             table_state: TableState::default(),
-            focus: Focus::Journeys,
-            input_mode: InputMode::Normal,
+            screen: Screen::List,
             shortcuts: ShortcutConfig::load(home)?,
             details_scroll: 0,
             details_viewport_height: 1,
@@ -212,11 +210,18 @@ impl JourneyApp {
             return Ok(());
         }
 
-        let dialog_action = match &mut self.dialog {
-            Dialog::None => {
-                self.handle_main_key(key);
-                None
+        if matches!(self.dialog, Dialog::None) {
+            match self.screen {
+                Screen::List => self.handle_list_key(key),
+                Screen::Search => self.handle_search_key(key),
+                Screen::Details => self.handle_details_key(key),
+                Screen::Actions => self.handle_action_key(key),
             }
+            return Ok(());
+        }
+
+        let dialog_action = match &mut self.dialog {
+            Dialog::None => unreachable!(),
             Dialog::NewTitle { input } => {
                 Some(handle_text_input(input, key, DialogKeyTarget::NewTitle))
             }
@@ -356,136 +361,114 @@ impl JourneyApp {
         Ok(())
     }
 
-    fn handle_main_key(&mut self, key: KeyEvent) {
-        if self.handle_shortcut(key) {
-            return;
-        }
-
-        match self.focus {
-            Focus::Journeys => self.handle_journey_key(key),
-            Focus::Details => self.handle_details_key(key),
-            Focus::Actions => self.handle_action_key(key),
-        }
-    }
-
-    fn handle_shortcut(&mut self, key: KeyEvent) -> bool {
-        match self.input_mode {
-            InputMode::Normal => {
-                if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-                    self.should_quit = true;
-                    return true;
-                }
-
-                match self.shortcuts.normal_command(key) {
-                    Some(NormalShortcut::NewJourney) => {
-                        self.open_new_journey_dialog();
-                        true
-                    }
-                    Some(NormalShortcut::SwitchToInsert) => {
-                        self.input_mode = InputMode::Insert;
-                        self.focus = Focus::Journeys;
-                        true
-                    }
-                    Some(NormalShortcut::Action(action)) => {
-                        self.execute_shortcut_action(action);
-                        true
-                    }
-                    None => false,
-                }
-            }
-            InputMode::Insert => match self.shortcuts.insert_command(key) {
-                Some(InsertShortcut::NewJourney) => {
-                    self.open_new_journey_dialog();
-                    true
-                }
-                Some(InsertShortcut::SwitchToNormal) => {
-                    self.input_mode = InputMode::Normal;
-                    self.focus = Focus::Journeys;
-                    true
-                }
-                None => false,
-            },
-        }
-    }
-
     fn open_new_journey_dialog(&mut self) {
         self.dialog = Dialog::NewTitle {
             input: String::new(),
         };
     }
 
-    fn handle_journey_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                if self.input_mode == InputMode::Normal && !self.query.is_empty() {
-                    self.query.clear();
-                    self.apply_filter(None);
-                }
-            }
-            KeyCode::Char('q')
-                if self.input_mode == InputMode::Normal && key.modifiers.is_empty() =>
-            {
+    fn handle_list_key(&mut self, key: KeyEvent) {
+        match self.shortcuts.command(key) {
+            Some(ShortcutCommand::Quit) | Some(ShortcutCommand::Back) => {
                 self.should_quit = true;
             }
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.reload_with_notice();
+            Some(ShortcutCommand::FocusSearch) => {
+                self.screen = Screen::Search;
             }
-            KeyCode::Tab => self.cycle_filter(false),
-            KeyCode::BackTab => self.cycle_filter(true),
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
-            KeyCode::Right => {
+            Some(ShortcutCommand::FocusDetails) | Some(ShortcutCommand::NavRight) => {
                 if self.selected_entry().is_some() {
-                    self.focus = Focus::Details;
+                    self.screen = Screen::Details;
                 }
             }
-            KeyCode::Enter => {
+            Some(ShortcutCommand::OpenActions) | Some(ShortcutCommand::Confirm) => {
                 if self.selected_entry().is_some() {
-                    self.focus = Focus::Actions;
+                    self.screen = Screen::Actions;
                     self.action_selected = 0;
                     self.sync_action_state();
                 }
             }
-            KeyCode::Backspace if self.input_mode == InputMode::Insert => {
-                self.query.pop();
-                self.apply_filter(None);
-            }
-            KeyCode::Char(ch)
-                if self.input_mode == InputMode::Insert && editable_modifiers(key.modifiers) =>
-            {
-                self.query.push(ch);
-                self.apply_filter(None);
-            }
+            Some(ShortcutCommand::NavUp) => self.move_selection(-1),
+            Some(ShortcutCommand::NavDown) => self.move_selection(1),
+            Some(ShortcutCommand::NewJourney) => self.open_new_journey_dialog(),
+            Some(ShortcutCommand::Reload) => self.reload_with_notice(),
+            Some(ShortcutCommand::CycleFilter) => self.cycle_filter(false),
+            Some(ShortcutCommand::CycleFilterBack) => self.cycle_filter(true),
+            Some(ShortcutCommand::Action(action)) => self.execute_shortcut_action(action),
             _ => {}
         }
     }
 
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        match self.shortcuts.command(key) {
+            Some(ShortcutCommand::Quit) => {
+                self.should_quit = true;
+            }
+            Some(ShortcutCommand::Back) => {
+                if self.query.is_empty() {
+                    self.screen = Screen::List;
+                } else {
+                    self.query.clear();
+                    self.apply_filter(None);
+                }
+            }
+            Some(ShortcutCommand::Confirm) => {
+                self.screen = Screen::List;
+            }
+            Some(ShortcutCommand::NavUp) => self.move_selection(-1),
+            Some(ShortcutCommand::NavDown) => self.move_selection(1),
+            Some(ShortcutCommand::NewJourney) => self.open_new_journey_dialog(),
+            Some(ShortcutCommand::Reload) => self.reload_with_notice(),
+            _ => match key.code {
+                KeyCode::Backspace => {
+                    self.query.pop();
+                    self.apply_filter(None);
+                }
+                KeyCode::Char(ch) if editable_modifiers(key.modifiers) => {
+                    self.query.push(ch);
+                    self.apply_filter(None);
+                }
+                _ => {}
+            },
+        }
+    }
+
     fn handle_details_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => self.focus = Focus::Journeys,
-            KeyCode::Left => {
+        match self.shortcuts.command(key) {
+            Some(ShortcutCommand::Quit) => {
+                self.should_quit = true;
+            }
+            Some(ShortcutCommand::Back) | Some(ShortcutCommand::NavLeft) => {
                 if self.doc_tab_index > 0 {
                     self.doc_tab_index -= 1;
                     self.details_scroll = 0;
                 } else {
-                    self.focus = Focus::Journeys;
+                    self.screen = Screen::List;
                 }
             }
-            KeyCode::Right => {
+            Some(ShortcutCommand::OpenActions) | Some(ShortcutCommand::Confirm) => {
+                if self.selected_entry().is_some() {
+                    self.screen = Screen::Actions;
+                    self.action_selected = 0;
+                    self.sync_action_state();
+                }
+            }
+            Some(ShortcutCommand::NavUp) => self.scroll_details_up(1),
+            Some(ShortcutCommand::NavDown) => self.scroll_details_down(1),
+            Some(ShortcutCommand::NavRight) => {
                 let tab_count = self.doc_tab_count();
                 if tab_count > 0 && self.doc_tab_index < tab_count - 1 {
                     self.doc_tab_index += 1;
                     self.details_scroll = 0;
                 }
             }
-            KeyCode::Tab => {
+            Some(ShortcutCommand::CycleFilter) => {
                 let tab_count = self.doc_tab_count();
                 if tab_count > 0 {
                     self.doc_tab_index = (self.doc_tab_index + 1) % tab_count;
                     self.details_scroll = 0;
                 }
             }
-            KeyCode::BackTab => {
+            Some(ShortcutCommand::CycleFilterBack) => {
                 let tab_count = self.doc_tab_count();
                 if tab_count > 0 {
                     self.doc_tab_index = if self.doc_tab_index == 0 {
@@ -496,41 +479,37 @@ impl JourneyApp {
                     self.details_scroll = 0;
                 }
             }
-            KeyCode::Char('q') if key.modifiers.is_empty() => self.focus = Focus::Journeys,
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.reload_with_notice();
-            }
-            KeyCode::Up => self.scroll_details_up(1),
-            KeyCode::Down => self.scroll_details_down(1),
-            KeyCode::PageUp => self.scroll_details_up(self.details_page_step()),
-            KeyCode::PageDown => self.scroll_details_down(self.details_page_step()),
-            KeyCode::Home => self.details_scroll = 0,
-            KeyCode::End => self.details_scroll = usize::MAX,
-            KeyCode::Enter => {
-                if self.selected_entry().is_some() {
-                    self.focus = Focus::Actions;
-                    self.action_selected = 0;
-                    self.sync_action_state();
-                }
-            }
-            _ => {}
+            Some(ShortcutCommand::Reload) => self.reload_with_notice(),
+            _ => match key.code {
+                KeyCode::PageUp => self.scroll_details_up(self.details_page_step()),
+                KeyCode::PageDown => self.scroll_details_down(self.details_page_step()),
+                KeyCode::Home => self.details_scroll = 0,
+                KeyCode::End => self.details_scroll = usize::MAX,
+                _ => {}
+            },
         }
     }
 
     fn handle_action_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => self.focus = Focus::Journeys,
-            KeyCode::Char('q') if key.modifiers.is_empty() => self.focus = Focus::Journeys,
-            KeyCode::Up => {
+        match self.shortcuts.command(key) {
+            Some(ShortcutCommand::Quit) => {
+                self.should_quit = true;
+            }
+            Some(ShortcutCommand::Back) => {
+                self.screen = Screen::List;
+            }
+            Some(ShortcutCommand::Confirm) | Some(ShortcutCommand::OpenActions) => {
+                self.execute_selected_action();
+            }
+            Some(ShortcutCommand::NavUp) => {
                 self.action_selected = self.action_selected.saturating_sub(1);
                 self.sync_action_state();
             }
-            KeyCode::Down => {
+            Some(ShortcutCommand::NavDown) => {
                 let max = self.shortcuts.actions().len().saturating_sub(1);
                 self.action_selected = (self.action_selected + 1).min(max);
                 self.sync_action_state();
             }
-            KeyCode::Enter => self.execute_selected_action(),
             _ => {}
         }
     }
@@ -999,7 +978,7 @@ impl JourneyApp {
         match result {
             Ok(message) => {
                 self.notice_success(message);
-                self.focus = Focus::Journeys;
+                self.screen = Screen::List;
                 self.reload_preserving(preferred_id.as_deref())?;
             }
             Err(err) => self.notice_error(err.to_string()),
@@ -2771,34 +2750,11 @@ fn status_style(status: JourneyStatus) -> Style {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Focus {
-    Journeys,
+enum Screen {
+    List,
+    Search,
     Details,
     Actions,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum InputMode {
-    Normal,
-    Insert,
-}
-
-impl InputMode {
-    fn label(self) -> &'static str {
-        match self {
-            InputMode::Normal => "normal",
-            InputMode::Insert => "insert",
-        }
-    }
-
-    fn style(self) -> Style {
-        match self {
-            InputMode::Normal => Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-            InputMode::Insert => accent().add_modifier(Modifier::BOLD),
-        }
-    }
 }
 
 impl TuiAction {
