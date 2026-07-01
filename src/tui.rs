@@ -1166,7 +1166,12 @@ fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
         .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
         .split(root[1]);
     render_journey_list(frame, app, body[0]);
-    render_details(frame, app, body[1]);
+    render_details_pane(frame, app, body[1], app.screen == Screen::Details);
+
+    if app.screen == Screen::Actions {
+        render_actions(frame, app, body[0]);
+    }
+
     render_footer(frame, app, root[2]);
     render_dialog(frame, app, area);
 }
@@ -1181,26 +1186,37 @@ fn render_header(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         })
         .unwrap_or_else(|| "no git repo detected".to_string());
 
+    let search_indicator = if app.screen == Screen::Search {
+        vec![
+            Span::styled("search: ", accent().add_modifier(Modifier::BOLD)),
+            Span::styled(&app.query, Style::default().fg(Color::White)),
+            Span::styled("_", Style::default().fg(Color::DarkGray)),
+        ]
+    } else if !app.query.is_empty() {
+        vec![
+            Span::styled("filter: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&app.query, Style::default().fg(Color::DarkGray)),
+        ]
+    } else {
+        vec![]
+    };
+
+    let mut second_line = vec![
+        Span::styled("filter: ", dim()),
+        Span::styled(app.filter.label(), accent()),
+    ];
+    if !search_indicator.is_empty() {
+        second_line.push(Span::raw("  "));
+        second_line.extend(search_indicator);
+    }
+
     let lines = vec![
         Line::from(vec![
             Span::styled("Journey", accent().add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(repo_hint, Style::default().fg(Color::DarkGray)),
         ]),
-        Line::from(vec![
-            Span::styled("mode: ", dim()),
-            Span::styled(app.input_mode.label(), app.input_mode.style()),
-            Span::raw("  "),
-            Span::styled("filter: ", dim()),
-            Span::styled(app.filter.label(), accent()),
-            Span::raw("  "),
-            Span::styled("search: ", dim()),
-            Span::raw(if app.query.is_empty() {
-                String::from("")
-            } else {
-                app.query.clone()
-            }),
-        ]),
+        Line::from(second_line),
     ];
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::BOTTOM)),
@@ -1222,17 +1238,12 @@ fn render_journey_list(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) 
             .collect()
     };
 
-    let title = match app.focus {
-        Focus::Journeys => " Journeys ",
-        Focus::Details => " Journeys ",
-        Focus::Actions => " Journeys ",
-    };
     let block = Block::default()
-        .title(title)
+        .title(" Journeys ")
         .borders(Borders::ALL)
-        .border_style(match app.focus {
-            Focus::Journeys => accent(),
-            Focus::Details | Focus::Actions => Style::default().fg(Color::DarkGray),
+        .border_style(match app.screen {
+            Screen::List | Screen::Search => accent(),
+            Screen::Details | Screen::Actions => Style::default().fg(Color::DarkGray),
         });
     let header = Row::new([
         Cell::from("Journey"),
@@ -1272,21 +1283,6 @@ fn journey_row(entry: &IndexEntry) -> Row<'static> {
         Cell::from(entry.status.to_string()).style(status_style(entry.status)),
         Cell::from(repos).style(dim()),
     ])
-}
-
-fn render_details(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
-    match app.focus {
-        Focus::Journeys => render_details_pane(frame, app, area, false),
-        Focus::Details => render_details_pane(frame, app, area, true),
-        Focus::Actions => {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-                .split(area);
-            render_details_pane(frame, app, chunks[0], false);
-            render_actions(frame, app, chunks[1]);
-        }
-    }
 }
 
 fn render_details_pane(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect, focused: bool) {
@@ -1485,24 +1481,35 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         };
         Line::from(Span::styled(notice.message.clone(), style))
     });
-    let help = match app.input_mode {
-        InputMode::Insert => format!(
-            "INSERT  type search  {} normal  {} new  Tab filter  Up/Down select",
-            app.shortcuts.normal_mode.display(),
-            app.shortcuts.new_journey.display()
+    let help = match app.screen {
+        Screen::List => {
+            let parts = vec![
+                format!("{} search", app.shortcuts.focus_search_display()),
+                format!("{} details", app.shortcuts.focus_details_display()),
+                format!("{} actions", app.shortcuts.open_actions_display()),
+                format!("{} new", app.shortcuts.new_journey.display()),
+                format!("{} quit", app.shortcuts.quit_display()),
+            ];
+            parts.join("  ")
+        }
+        Screen::Search => format!(
+            "{} clear/exit  {} go to list",
+            app.shortcuts.back_display(),
+            app.shortcuts.confirm_display()
         ),
-        InputMode::Normal => match app.focus {
-            Focus::Journeys => normal_help(app),
-            Focus::Details => {
-                "NORMAL  Tab/S-Tab switch doc  Up/Down scroll  Esc back  Enter actions".to_string()
-            }
-            Focus::Actions => {
-                format!(
-                    "NORMAL  Enter run  Esc back  {} new  shortcuts active",
-                    app.shortcuts.new_journey.display()
-                )
-            }
-        },
+        Screen::Details => format!(
+            "Tab/S-Tab switch doc  {}/{} scroll  {} back",
+            app.shortcuts.nav_up_display(),
+            app.shortcuts.nav_down_display(),
+            app.shortcuts.back_display()
+        ),
+        Screen::Actions => format!(
+            "{}/{} navigate  {} run  {} back",
+            app.shortcuts.nav_up_display(),
+            app.shortcuts.nav_down_display(),
+            app.shortcuts.confirm_display(),
+            app.shortcuts.back_display()
+        ),
     };
     let lines = vec![
         notice.unwrap_or_else(|| Line::from("")),
@@ -1512,21 +1519,6 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         Paragraph::new(lines).block(Block::default().borders(Borders::TOP)),
         area,
     );
-}
-
-fn normal_help(app: &JourneyApp) -> String {
-    let mut parts = vec![
-        "NORMAL".to_string(),
-        format!("{} search", app.shortcuts.insert_mode.display()),
-        format!("{} new", app.shortcuts.new_journey.display()),
-    ];
-    parts.extend(app.shortcuts.actions().iter().filter_map(|action| {
-        app.shortcuts
-            .binding_for_action(*action)
-            .map(|binding| format!("{} {}", binding.display(), action.help_label()))
-    }));
-    parts.push("Esc/q quit".to_string());
-    parts.join("  ")
 }
 
 fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
@@ -2793,25 +2785,6 @@ impl TuiAction {
             TuiAction::Pause => "lifecycle only",
             TuiAction::Archive => "release worktrees",
             TuiAction::Abandon => "release worktrees",
-        }
-    }
-
-    fn help_label(self) -> &'static str {
-        match self {
-            TuiAction::CopyCd => "copy-cd",
-            TuiAction::OpenNvim => "nvim",
-            TuiAction::OpenClaude => "claude",
-            TuiAction::Resume => "resume",
-            TuiAction::NewBranchWorktree => "new-worktree",
-            TuiAction::ExistingBranchWorktree => "existing-worktree",
-            TuiAction::LinkCurrent => "link",
-            TuiAction::UnlinkRepo => "unlink",
-            TuiAction::Capture => "capture",
-            TuiAction::DeleteWorktree => "delete",
-            TuiAction::Done => "done",
-            TuiAction::Pause => "pause",
-            TuiAction::Archive => "archive",
-            TuiAction::Abandon => "abandon",
         }
     }
 }

@@ -166,8 +166,16 @@ impl ShortcutConfig {
             "shortcuts.open_actions",
         )?;
         apply_key(&mut config.nav_up, shortcuts.nav_up, "shortcuts.nav_up")?;
-        apply_key(&mut config.nav_down, shortcuts.nav_down, "shortcuts.nav_down")?;
-        apply_key(&mut config.nav_left, shortcuts.nav_left, "shortcuts.nav_left")?;
+        apply_key(
+            &mut config.nav_down,
+            shortcuts.nav_down,
+            "shortcuts.nav_down",
+        )?;
+        apply_key(
+            &mut config.nav_left,
+            shortcuts.nav_left,
+            "shortcuts.nav_left",
+        )?;
         apply_key(
             &mut config.nav_right,
             shortcuts.nav_right,
@@ -222,6 +230,38 @@ impl ShortcutConfig {
             return Some(Command::CycleFilterBack);
         }
         self.action_for_key(key).map(Command::Action)
+    }
+
+    pub(crate) fn quit_display(&self) -> String {
+        self.quit.display()
+    }
+
+    pub(crate) fn back_display(&self) -> String {
+        self.back.display()
+    }
+
+    pub(crate) fn confirm_display(&self) -> String {
+        self.confirm.display()
+    }
+
+    pub(crate) fn focus_search_display(&self) -> String {
+        self.focus_search.display()
+    }
+
+    pub(crate) fn focus_details_display(&self) -> String {
+        self.focus_details.display()
+    }
+
+    pub(crate) fn open_actions_display(&self) -> String {
+        self.open_actions.display()
+    }
+
+    pub(crate) fn nav_up_display(&self) -> String {
+        self.nav_up.display()
+    }
+
+    pub(crate) fn nav_down_display(&self) -> String {
+        self.nav_down.display()
     }
 
     pub(crate) fn actions(&self) -> &[TuiAction] {
