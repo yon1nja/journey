@@ -377,14 +377,13 @@ impl TuiAction {
             Self::OpenNvim => Some(KeyBinding::plain('n')),
             Self::NewBranchWorktree => Some(KeyBinding::plain('b')),
             Self::ExistingBranchWorktree => Some(KeyBinding::plain('w')),
-            Self::LinkCurrent => Some(KeyBinding::plain('l')),
             Self::UnlinkRepo => Some(KeyBinding::plain('u')),
             Self::Capture => Some(KeyBinding::plain('t')),
             Self::DeleteWorktree => Some(KeyBinding::plain('d')),
             Self::Done => Some(KeyBinding::plain('f')),
             Self::Pause => Some(KeyBinding::plain('p')),
             Self::Archive => Some(KeyBinding::plain('x')),
-            Self::CopyCd | Self::Resume | Self::Abandon => None,
+            Self::LinkCurrent | Self::CopyCd | Self::Resume | Self::Abandon => None,
         }
     }
 }
@@ -633,6 +632,8 @@ mod tests {
             config.command(key('c')),
             Some(Command::Action(TuiAction::OpenClaude))
         );
+        // Verify LinkCurrent has no default binding (not 'l', which is FocusDetails)
+        assert_eq!(config.binding_for_action(TuiAction::LinkCurrent), None);
     }
 
     #[test]
