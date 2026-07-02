@@ -1194,7 +1194,7 @@ fn render_header(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         ]
     } else if !app.query.is_empty() {
         vec![
-            Span::styled("filter: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("query: ", Style::default().fg(Color::DarkGray)),
             Span::styled(&app.query, Style::default().fg(Color::DarkGray)),
         ]
     } else {
