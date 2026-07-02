@@ -10,10 +10,11 @@ pub const CONFIG_FILE: &str = "config.toml";
 
 pub const DEFAULT_CONFIG_TOML: &str = r#"# Journey configuration.
 #
-# Shortcuts use single keys like "c", or control keys like "ctrl+n".
+# Shortcuts use single keys like "c", control keys like "ctrl+n",
+# or special keys: "esc", "enter".
 #
 # Actions are shown in this order. Remove an action from order, or add it to
-# disabled, to hide it and disable its normal-mode shortcut.
+# disabled, to hide it and disable its shortcut.
 [actions]
 order = [
   "open_claude",
@@ -34,12 +35,25 @@ order = [
 disabled = []
 
 [shortcuts]
+# Navigation
+quit = "q"
+back = "esc"
+confirm = "enter"
+focus_search = "/"
+focus_details = "l"
+open_actions = "enter"
+nav_up = "k"
+nav_down = "j"
+nav_left = "h"
+nav_right = "l"
+
+# Actions
 new_journey = "ctrl+n"
 open_claude = "c"
 open_nvim = "n"
 new_branch_worktree = "b"
 existing_branch_worktree = "w"
-link_current = "l"
+link_current = "none"
 unlink_repo = "u"
 capture = "t"
 delete_worktree = "d"
@@ -49,15 +63,21 @@ archive = "x"
 copy_cd = "none"
 resume = "none"
 abandon = "none"
-insert_mode = "a"
-normal_mode = "esc"
 "#;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ShortcutConfig {
     pub(crate) new_journey: KeyBinding,
-    pub(crate) insert_mode: KeyBinding,
-    pub(crate) normal_mode: KeyBinding,
+    quit: KeyBinding,
+    back: KeyBinding,
+    confirm: KeyBinding,
+    focus_search: KeyBinding,
+    focus_details: KeyBinding,
+    open_actions: KeyBinding,
+    nav_up: KeyBinding,
+    nav_down: KeyBinding,
+    nav_left: KeyBinding,
+    nav_right: KeyBinding,
     actions: Vec<TuiAction>,
     action_bindings: HashMap<TuiAction, Option<KeyBinding>>,
 }
@@ -127,39 +147,121 @@ impl ShortcutConfig {
         config.apply_action_key(TuiAction::CopyCd, shortcuts.copy_cd, "shortcuts.copy_cd")?;
         config.apply_action_key(TuiAction::Resume, shortcuts.resume, "shortcuts.resume")?;
         config.apply_action_key(TuiAction::Abandon, shortcuts.abandon, "shortcuts.abandon")?;
+        apply_key(&mut config.quit, shortcuts.quit, "shortcuts.quit")?;
+        apply_key(&mut config.back, shortcuts.back, "shortcuts.back")?;
+        apply_key(&mut config.confirm, shortcuts.confirm, "shortcuts.confirm")?;
         apply_key(
-            &mut config.insert_mode,
-            shortcuts.insert_mode,
-            "shortcuts.insert_mode",
+            &mut config.focus_search,
+            shortcuts.focus_search,
+            "shortcuts.focus_search",
         )?;
         apply_key(
-            &mut config.normal_mode,
-            shortcuts.normal_mode,
-            "shortcuts.normal_mode",
+            &mut config.focus_details,
+            shortcuts.focus_details,
+            "shortcuts.focus_details",
+        )?;
+        apply_key(
+            &mut config.open_actions,
+            shortcuts.open_actions,
+            "shortcuts.open_actions",
+        )?;
+        apply_key(&mut config.nav_up, shortcuts.nav_up, "shortcuts.nav_up")?;
+        apply_key(
+            &mut config.nav_down,
+            shortcuts.nav_down,
+            "shortcuts.nav_down",
+        )?;
+        apply_key(
+            &mut config.nav_left,
+            shortcuts.nav_left,
+            "shortcuts.nav_left",
+        )?;
+        apply_key(
+            &mut config.nav_right,
+            shortcuts.nav_right,
+            "shortcuts.nav_right",
         )?;
 
         config.validate()?;
         Ok(config)
     }
 
-    pub(crate) fn normal_command(&self, key: KeyEvent) -> Option<NormalShortcut> {
+    pub(crate) fn command(&self, key: KeyEvent) -> Option<Command> {
+        if self.quit.matches(key) {
+            return Some(Command::Quit);
+        }
+        if self.back.matches(key) {
+            return Some(Command::Back);
+        }
+        if self.confirm.matches(key) {
+            return Some(Command::Confirm);
+        }
+        if self.focus_search.matches(key) {
+            return Some(Command::FocusSearch);
+        }
         if self.new_journey.matches(key) {
-            return Some(NormalShortcut::NewJourney);
+            return Some(Command::NewJourney);
         }
-        if self.insert_mode.matches(key) {
-            return Some(NormalShortcut::SwitchToInsert);
+        if self.focus_details.matches(key) {
+            return Some(Command::FocusDetails);
         }
-        self.action_for_key(key).map(NormalShortcut::Action)
+        if self.open_actions.matches(key) {
+            return Some(Command::OpenActions);
+        }
+        if self.nav_up.matches(key) {
+            return Some(Command::NavUp);
+        }
+        if self.nav_down.matches(key) {
+            return Some(Command::NavDown);
+        }
+        if self.nav_left.matches(key) {
+            return Some(Command::NavLeft);
+        }
+        if self.nav_right.matches(key) {
+            return Some(Command::NavRight);
+        }
+        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Some(Command::Reload);
+        }
+        if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+            return Some(Command::CycleFilter);
+        }
+        if key.code == KeyCode::BackTab {
+            return Some(Command::CycleFilterBack);
+        }
+        self.action_for_key(key).map(Command::Action)
     }
 
-    pub(crate) fn insert_command(&self, key: KeyEvent) -> Option<InsertShortcut> {
-        if self.new_journey.matches(key) {
-            return Some(InsertShortcut::NewJourney);
-        }
-        if self.normal_mode.matches(key) {
-            return Some(InsertShortcut::SwitchToNormal);
-        }
-        None
+    pub(crate) fn quit_display(&self) -> String {
+        self.quit.display()
+    }
+
+    pub(crate) fn back_display(&self) -> String {
+        self.back.display()
+    }
+
+    pub(crate) fn confirm_display(&self) -> String {
+        self.confirm.display()
+    }
+
+    pub(crate) fn focus_search_display(&self) -> String {
+        self.focus_search.display()
+    }
+
+    pub(crate) fn focus_details_display(&self) -> String {
+        self.focus_details.display()
+    }
+
+    pub(crate) fn open_actions_display(&self) -> String {
+        self.open_actions.display()
+    }
+
+    pub(crate) fn nav_up_display(&self) -> String {
+        self.nav_up.display()
+    }
+
+    pub(crate) fn nav_down_display(&self) -> String {
+        self.nav_down.display()
     }
 
     pub(crate) fn actions(&self) -> &[TuiAction] {
@@ -178,23 +280,19 @@ impl ShortcutConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        let mut normal_bindings = vec![
+        let mut bindings = vec![
             ("new_journey".to_string(), self.new_journey),
-            ("insert_mode".to_string(), self.insert_mode),
+            ("quit".to_string(), self.quit),
+            ("focus_search".to_string(), self.focus_search),
+            ("nav_up".to_string(), self.nav_up),
+            ("nav_down".to_string(), self.nav_down),
         ];
         for action in &self.actions {
             if let Some(binding) = self.binding_for_action(*action) {
-                normal_bindings.push((action.config_key().to_string(), binding));
+                bindings.push((action.config_key().to_string(), binding));
             }
         }
-        validate_unique("normal mode", normal_bindings)?;
-        validate_unique(
-            "insert mode",
-            vec![
-                ("new_journey".to_string(), self.new_journey),
-                ("normal_mode".to_string(), self.normal_mode),
-            ],
-        )
+        validate_unique("shortcuts", bindings)
     }
 
     fn apply_action_key(
@@ -220,8 +318,16 @@ impl Default for ShortcutConfig {
             .collect();
         Self {
             new_journey: KeyBinding::control('n'),
-            insert_mode: KeyBinding::plain('a'),
-            normal_mode: KeyBinding::escape(),
+            quit: KeyBinding::plain('q'),
+            back: KeyBinding::escape(),
+            confirm: KeyBinding::enter(),
+            focus_search: KeyBinding::plain('/'),
+            focus_details: KeyBinding::plain('l'),
+            open_actions: KeyBinding::enter(),
+            nav_up: KeyBinding::plain('k'),
+            nav_down: KeyBinding::plain('j'),
+            nav_left: KeyBinding::plain('h'),
+            nav_right: KeyBinding::plain('l'),
             actions: TuiAction::all().to_vec(),
             action_bindings,
         }
@@ -229,16 +335,22 @@ impl Default for ShortcutConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NormalShortcut {
+pub(crate) enum Command {
+    Quit,
+    Back,
+    Confirm,
+    FocusSearch,
+    FocusDetails,
+    OpenActions,
+    NavUp,
+    NavDown,
+    NavLeft,
+    NavRight,
     NewJourney,
-    SwitchToInsert,
+    Reload,
+    CycleFilter,
+    CycleFilterBack,
     Action(TuiAction),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InsertShortcut {
-    NewJourney,
-    SwitchToNormal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -305,14 +417,13 @@ impl TuiAction {
             Self::OpenNvim => Some(KeyBinding::plain('n')),
             Self::NewBranchWorktree => Some(KeyBinding::plain('b')),
             Self::ExistingBranchWorktree => Some(KeyBinding::plain('w')),
-            Self::LinkCurrent => Some(KeyBinding::plain('l')),
             Self::UnlinkRepo => Some(KeyBinding::plain('u')),
             Self::Capture => Some(KeyBinding::plain('t')),
             Self::DeleteWorktree => Some(KeyBinding::plain('d')),
             Self::Done => Some(KeyBinding::plain('f')),
             Self::Pause => Some(KeyBinding::plain('p')),
             Self::Archive => Some(KeyBinding::plain('x')),
-            Self::CopyCd | Self::Resume | Self::Abandon => None,
+            Self::LinkCurrent | Self::CopyCd | Self::Resume | Self::Abandon => None,
         }
     }
 }
@@ -345,6 +456,13 @@ impl KeyBinding {
         }
     }
 
+    fn enter() -> Self {
+        Self {
+            code: BindingCode::Enter,
+            control: false,
+        }
+    }
+
     fn parse(value: &str) -> Result<Self> {
         let raw = value.trim();
         if raw.is_empty() {
@@ -363,6 +481,7 @@ impl KeyBinding {
 
         let code = match key {
             "esc" | "escape" => BindingCode::Esc,
+            "enter" | "return" => BindingCode::Enter,
             key => {
                 let mut chars = key.chars();
                 let Some(ch) = chars.next() else {
@@ -384,6 +503,7 @@ impl KeyBinding {
         let key = match self.code {
             BindingCode::Char(ch) => ch.to_ascii_uppercase().to_string(),
             BindingCode::Esc => "Esc".to_string(),
+            BindingCode::Enter => "Enter".to_string(),
         };
         if self.control {
             format!("Ctrl-{key}")
@@ -410,6 +530,7 @@ impl KeyBinding {
                 actual.eq_ignore_ascii_case(&expected)
             }
             (BindingCode::Esc, KeyCode::Esc) => true,
+            (BindingCode::Enter, KeyCode::Enter) => true,
             _ => false,
         }
     }
@@ -419,6 +540,7 @@ impl KeyBinding {
 enum BindingCode {
     Char(char),
     Esc,
+    Enter,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -437,9 +559,19 @@ struct ActionOverrides {
 }
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct ShortcutOverrides {
     new_journey: Option<String>,
+    quit: Option<String>,
+    back: Option<String>,
+    confirm: Option<String>,
+    focus_search: Option<String>,
+    focus_details: Option<String>,
+    open_actions: Option<String>,
+    nav_up: Option<String>,
+    nav_down: Option<String>,
+    nav_left: Option<String>,
+    nav_right: Option<String>,
     open_claude: Option<String>,
     open_nvim: Option<String>,
     new_branch_worktree: Option<String>,
@@ -454,8 +586,6 @@ struct ShortcutOverrides {
     copy_cd: Option<String>,
     resume: Option<String>,
     abandon: Option<String>,
-    insert_mode: Option<String>,
-    normal_mode: Option<String>,
 }
 
 fn apply_key(target: &mut KeyBinding, value: Option<String>, field: &str) -> Result<()> {
@@ -521,41 +651,29 @@ mod tests {
     }
 
     #[test]
-    fn defaults_match_requested_shortcuts() {
+    fn defaults_resolve_navigation_commands() {
         let config = ShortcutConfig::default();
 
+        assert_eq!(config.command(key('q')), Some(Command::Quit));
         assert_eq!(
-            config.normal_command(key('c')),
-            Some(NormalShortcut::Action(TuiAction::OpenClaude))
+            config.command(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())),
+            Some(Command::Back)
         );
+        assert_eq!(config.command(key('/')), Some(Command::FocusSearch));
+        assert_eq!(config.command(key('l')), Some(Command::FocusDetails));
         assert_eq!(
-            config.normal_command(key('n')),
-            Some(NormalShortcut::Action(TuiAction::OpenNvim))
+            config.command(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty())),
+            Some(Command::Confirm)
         );
+        assert_eq!(config.command(key('k')), Some(Command::NavUp));
+        assert_eq!(config.command(key('j')), Some(Command::NavDown));
+        assert_eq!(config.command(ctrl('n')), Some(Command::NewJourney));
         assert_eq!(
-            config.normal_command(key('b')),
-            Some(NormalShortcut::Action(TuiAction::NewBranchWorktree))
+            config.command(key('c')),
+            Some(Command::Action(TuiAction::OpenClaude))
         );
-        assert_eq!(
-            config.normal_command(key('t')),
-            Some(NormalShortcut::Action(TuiAction::Capture))
-        );
-        assert_eq!(
-            config.normal_command(key('a')),
-            Some(NormalShortcut::SwitchToInsert)
-        );
-        assert_eq!(
-            config.insert_command(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())),
-            Some(InsertShortcut::SwitchToNormal)
-        );
-        assert_eq!(
-            config.normal_command(ctrl('n')),
-            Some(NormalShortcut::NewJourney)
-        );
-        assert_eq!(
-            config.insert_command(ctrl('n')),
-            Some(InsertShortcut::NewJourney)
-        );
+        // Verify LinkCurrent has no default binding (not 'l', which is FocusDetails)
+        assert_eq!(config.binding_for_action(TuiAction::LinkCurrent), None);
     }
 
     #[test]
@@ -564,38 +682,44 @@ mod tests {
             r#"
             [shortcuts]
             open_claude = "o"
-            insert_mode = "i"
-            normal_mode = "ctrl+g"
+            quit = "z"
+            focus_search = "s"
             "#,
         )
         .unwrap();
 
         assert_eq!(
-            config.normal_command(key('o')),
-            Some(NormalShortcut::Action(TuiAction::OpenClaude))
+            config.command(key('o')),
+            Some(Command::Action(TuiAction::OpenClaude))
         );
-        assert_eq!(
-            config.normal_command(key('i')),
-            Some(NormalShortcut::SwitchToInsert)
-        );
-        assert_eq!(
-            config.insert_command(ctrl('g')),
-            Some(InsertShortcut::SwitchToNormal)
-        );
+        assert_eq!(config.command(key('z')), Some(Command::Quit));
+        assert_eq!(config.command(key('s')), Some(Command::FocusSearch));
     }
 
     #[test]
-    fn rejects_duplicate_bindings_in_same_mode() {
+    fn rejects_duplicate_bindings() {
         let error = ShortcutConfig::from_toml(
             r#"
             [shortcuts]
-            open_claude = "n"
+            open_claude = "k"
             "#,
         )
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("normal mode shortcut `N`"));
+        assert!(error.contains("shortcut `K`"));
+    }
+
+    #[test]
+    fn ignores_legacy_mode_fields() {
+        let config = ShortcutConfig::from_toml(
+            r#"
+            [shortcuts]
+            insert_mode = "a"
+            normal_mode = "esc"
+            "#,
+        );
+        assert!(config.is_ok());
     }
 
     #[test]
@@ -614,10 +738,10 @@ mod tests {
 
         assert_eq!(config.actions(), &[TuiAction::Pause, TuiAction::CopyCd]);
         assert_eq!(
-            config.normal_command(key('y')),
-            Some(NormalShortcut::Action(TuiAction::CopyCd))
+            config.command(key('y')),
+            Some(Command::Action(TuiAction::CopyCd))
         );
-        assert_eq!(config.normal_command(key('c')), None);
+        assert_eq!(config.command(key('c')), None);
     }
 
     #[test]
@@ -632,6 +756,37 @@ mod tests {
 
         assert!(config.actions().contains(&TuiAction::OpenClaude));
         assert_eq!(config.binding_for_action(TuiAction::OpenClaude), None);
-        assert_eq!(config.normal_command(key('c')), None);
+        assert_eq!(config.command(key('c')), None);
+    }
+
+    #[test]
+    fn parses_enter_binding() {
+        let binding = KeyBinding::parse("enter").unwrap();
+        let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        assert!(binding.matches(event));
+        assert_eq!(binding.display(), "Enter");
+    }
+
+    #[test]
+    fn parses_return_as_enter() {
+        let binding = KeyBinding::parse("return").unwrap();
+        let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        assert!(binding.matches(event));
+        assert_eq!(binding.display(), "Enter");
+    }
+
+    #[test]
+    fn enter_does_not_match_other_keys() {
+        let binding = KeyBinding::parse("enter").unwrap();
+        assert!(!binding.matches(key('a')));
+        assert!(!binding.matches(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())));
+    }
+
+    #[test]
+    fn enter_constructor() {
+        let binding = KeyBinding::enter();
+        let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        assert!(binding.matches(event));
+        assert_eq!(binding.display(), "Enter");
     }
 }

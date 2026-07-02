@@ -682,6 +682,6 @@ mod tests {
         let config = fs::read_to_string(home.join(config::CONFIG_FILE)).unwrap();
         assert!(config.contains("[shortcuts]"));
         assert!(config.contains("open_claude = \"c\""));
-        assert!(config.contains("normal_mode = \"esc\""));
+        assert!(config.contains("quit = \"q\""));
     }
 }
