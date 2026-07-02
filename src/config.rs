@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(config.command(key('l')), Some(Command::FocusDetails));
         assert_eq!(
             config.command(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty())),
-            Some(Command::OpenActions)
+            Some(Command::Confirm)
         );
         assert_eq!(config.command(key('k')), Some(Command::NavUp));
         assert_eq!(config.command(key('j')), Some(Command::NavDown));
@@ -682,7 +682,7 @@ mod tests {
             r#"
             [shortcuts]
             open_claude = "o"
-            quit = "x"
+            quit = "z"
             focus_search = "s"
             "#,
         )
@@ -692,7 +692,7 @@ mod tests {
             config.command(key('o')),
             Some(Command::Action(TuiAction::OpenClaude))
         );
-        assert_eq!(config.command(key('x')), Some(Command::Quit));
+        assert_eq!(config.command(key('z')), Some(Command::Quit));
         assert_eq!(config.command(key('s')), Some(Command::FocusSearch));
     }
 
