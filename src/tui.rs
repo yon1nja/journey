@@ -510,6 +510,7 @@ impl JourneyApp {
                 self.action_selected = (self.action_selected + 1).min(max);
                 self.sync_action_state();
             }
+            Some(ShortcutCommand::Action(action)) => self.execute_shortcut_action(action),
             _ => {}
         }
     }
@@ -1169,7 +1170,15 @@ fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
     render_details_pane(frame, app, body[1], app.screen == Screen::Details);
 
     if app.screen == Screen::Actions {
-        render_actions(frame, app, body[0]);
+        let action_count = app.shortcuts.actions().len().max(1) as u16 + 2; // +2 for border
+        let height = action_count.min(body[0].height);
+        let action_area = Rect {
+            x: body[0].x,
+            y: body[0].y + body[0].height - height,
+            width: body[0].width,
+            height,
+        };
+        render_actions(frame, app, action_area);
     }
 
     render_footer(frame, app, root[2]);
