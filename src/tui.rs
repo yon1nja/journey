@@ -1482,16 +1482,14 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
         Line::from(Span::styled(notice.message.clone(), style))
     });
     let help = match app.screen {
-        Screen::List => {
-            let parts = vec![
-                format!("{} search", app.shortcuts.focus_search_display()),
-                format!("{} details", app.shortcuts.focus_details_display()),
-                format!("{} actions", app.shortcuts.open_actions_display()),
-                format!("{} new", app.shortcuts.new_journey.display()),
-                format!("{} quit", app.shortcuts.quit_display()),
-            ];
-            parts.join("  ")
-        }
+        Screen::List => [
+            format!("{} search", app.shortcuts.focus_search_display()),
+            format!("{} details", app.shortcuts.focus_details_display()),
+            format!("{} actions", app.shortcuts.open_actions_display()),
+            format!("{} new", app.shortcuts.new_journey.display()),
+            format!("{} quit", app.shortcuts.quit_display()),
+        ]
+        .join("  "),
         Screen::Search => format!(
             "{} clear/exit  {} go to list",
             app.shortcuts.back_display(),
