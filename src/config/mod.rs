@@ -55,7 +55,7 @@ nav_left = "h"
 nav_right = "l"
 
 # Actions
-new_journey = "ctrl+n"
+new_journey = "ctrl+j"
 open_claude = "c"
 open_nvim = "n"
 new_branch_worktree = "b"
@@ -324,7 +324,7 @@ impl Default for ShortcutConfig {
             .map(|action| (action, action.default_binding()))
             .collect();
         Self {
-            new_journey: KeyBinding::control('n'),
+            new_journey: KeyBinding::control('j'),
             quit: KeyBinding::plain('q'),
             back: KeyBinding::escape(),
             confirm: KeyBinding::enter(),
@@ -504,7 +504,7 @@ mod tests {
         );
         assert_eq!(config.command(key('k')), Some(Command::NavUp));
         assert_eq!(config.command(key('j')), Some(Command::NavDown));
-        assert_eq!(config.command(ctrl('n')), Some(Command::NewJourney));
+        assert_eq!(config.command(ctrl('j')), Some(Command::NewJourney));
         assert_eq!(
             config.command(key('c')),
             Some(Command::Action(TuiAction::OpenClaude))

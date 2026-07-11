@@ -2,12 +2,13 @@ mod dialog;
 mod markdown;
 mod render;
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, IsTerminal, Stderr, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -147,7 +148,10 @@ struct JourneyApp {
     action_selected: usize,
     action_state: ListState,
     dialog: Dialog,
-    notice: Option<Notice>,
+    toasts: VecDeque<Notification>,
+    notification_history: Vec<Notification>,
+    show_notification_history: bool,
+    notification_scroll: usize,
     doc_render_cache: DocRenderCache,
     output: Option<AppOutput>,
     should_quit: bool,
@@ -180,7 +184,10 @@ impl JourneyApp {
             action_selected: 0,
             action_state: ListState::default(),
             dialog: Dialog::None,
-            notice: None,
+            toasts: VecDeque::new(),
+            notification_history: Vec::new(),
+            show_notification_history: false,
+            notification_scroll: 0,
             doc_render_cache: DocRenderCache::default(),
             output: None,
             should_quit: false,
@@ -210,6 +217,28 @@ impl JourneyApp {
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
+            return Ok(());
+        }
+
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.show_notification_history = !self.show_notification_history;
+            self.notification_scroll = 0;
+            return Ok(());
+        }
+
+        if self.show_notification_history {
+            match key.code {
+                KeyCode::Esc => self.show_notification_history = false,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if self.notification_scroll + 1 < self.notification_history.len() {
+                        self.notification_scroll += 1;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.notification_scroll = self.notification_scroll.saturating_sub(1);
+                }
+                _ => {}
+            }
             return Ok(());
         }
 
@@ -528,7 +557,7 @@ impl JourneyApp {
                 };
                 let title = input.trim();
                 if title.is_empty() {
-                    self.notice_error("title is required");
+                    self.notify_error("title is required");
                 } else {
                     self.dialog = Dialog::NewDescription {
                         title: title.to_string(),
@@ -595,7 +624,7 @@ impl JourneyApp {
             }
             Err(err) => {
                 self.dialog = Dialog::None;
-                self.notice_error(format!("cannot create worktree: {err}"));
+                self.notify_error(format!("cannot create worktree: {err}"));
             }
         }
     }
@@ -613,7 +642,7 @@ impl JourneyApp {
                     state,
                 };
             }
-            Err(err) => self.notice_error(format!("cannot list branches: {err}")),
+            Err(err) => self.notify_error(format!("cannot list branches: {err}")),
         }
     }
 
@@ -634,7 +663,7 @@ impl JourneyApp {
             .and_then(|branch_idx| branches.get(*branch_idx))
             .cloned()
         else {
-            self.notice_error("no branch selected");
+            self.notify_error("no branch selected");
             return;
         };
 
@@ -652,7 +681,7 @@ impl JourneyApp {
                     Ok(None) => {}
                     Err(err) => {
                         self.dialog = Dialog::None;
-                        self.notice_error(format!("cannot inspect worktrees: {err}"));
+                        self.notify_error(format!("cannot inspect worktrees: {err}"));
                         return;
                     }
                 }
@@ -669,7 +698,7 @@ impl JourneyApp {
             }
             Err(err) => {
                 self.dialog = Dialog::None;
-                self.notice_error(format!("cannot create worktree: {err}"));
+                self.notify_error(format!("cannot create worktree: {err}"));
             }
         }
     }
@@ -728,7 +757,7 @@ impl JourneyApp {
             Ok(None) => {}
             Err(err) => {
                 self.dialog = Dialog::None;
-                self.notice_error(format!("cannot inspect worktrees: {err}"));
+                self.notify_error(format!("cannot inspect worktrees: {err}"));
                 return Ok(());
             }
         }
@@ -756,7 +785,7 @@ impl JourneyApp {
 
     fn execute_selected_action(&mut self) {
         let Some(action) = self.shortcuts.actions().get(self.action_selected).copied() else {
-            self.notice_error("no actions configured");
+            self.notify_error("no actions configured");
             return;
         };
         self.execute_action(action);
@@ -768,7 +797,7 @@ impl JourneyApp {
 
     fn execute_action(&mut self, action: TuiAction) {
         let Some(journey_id) = self.selected_id() else {
-            self.notice_error("no Journey selected");
+            self.notify_error("no Journey selected");
             return;
         };
 
@@ -777,8 +806,8 @@ impl JourneyApp {
                 let dir = storage::journey_dir(&self.home, &journey_id);
                 let command = cd_command(&dir);
                 match copy_to_clipboard(&command) {
-                    Ok(()) => self.notice_success("copied cd command to clipboard"),
-                    Err(err) => self.notice_error(format!("clipboard failed: {err}")),
+                    Ok(()) => self.notify_success("copied cd command to clipboard"),
+                    Err(err) => self.notify_error(format!("clipboard failed: {err}")),
                 }
             }
             TuiAction::OpenNvim => {
@@ -856,7 +885,7 @@ impl JourneyApp {
 
     fn open_unlink_dialog(&mut self, journey_id: &str) {
         match storage::resolve_context(&self.home, Some(journey_id), &self.cwd) {
-            Ok(ctx) if ctx.journey.repos.is_empty() => self.notice_error("no repos linked"),
+            Ok(ctx) if ctx.journey.repos.is_empty() => self.notify_error("no repos linked"),
             Ok(ctx) => {
                 let mut state = ListState::default();
                 state.select(Some(0));
@@ -867,7 +896,7 @@ impl JourneyApp {
                     state,
                 };
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
     }
 
@@ -882,7 +911,7 @@ impl JourneyApp {
             return Ok(());
         };
         let Some(repo) = repos.get(*selected) else {
-            self.notice_error("no repo selected");
+            self.notify_error("no repo selected");
             return Ok(());
         };
         let journey_id = journey_id.clone();
@@ -894,7 +923,7 @@ impl JourneyApp {
 
     fn open_delete_worktree_dialog(&mut self, journey_id: &str) {
         match storage::resolve_context(&self.home, Some(journey_id), &self.cwd) {
-            Ok(ctx) if ctx.journey.repos.is_empty() => self.notice_error("no worktrees linked"),
+            Ok(ctx) if ctx.journey.repos.is_empty() => self.notify_error("no worktrees linked"),
             Ok(ctx) => {
                 let mut state = ListState::default();
                 state.select(Some(0));
@@ -905,7 +934,7 @@ impl JourneyApp {
                     state,
                 };
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
     }
 
@@ -920,7 +949,7 @@ impl JourneyApp {
             return Ok(());
         };
         let Some(repo) = repos.get(*selected) else {
-            self.notice_error("no worktree selected");
+            self.notify_error("no worktree selected");
             return Ok(());
         };
         let journey_id = journey_id.clone();
@@ -937,7 +966,7 @@ impl JourneyApp {
         let journey_id = journey_id.clone();
         let text = input.trim().to_string();
         if text.is_empty() {
-            self.notice_error("capture text is required");
+            self.notify_error("capture text is required");
             return Ok(());
         }
 
@@ -960,7 +989,7 @@ impl JourneyApp {
                     repo_count: ctx.journey.repos.len(),
                 };
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
     }
 
@@ -981,11 +1010,11 @@ impl JourneyApp {
     ) -> Result<()> {
         match result {
             Ok(message) => {
-                self.notice_success(message);
+                self.notify_success(message);
                 self.screen = Screen::List;
                 self.reload_preserving(preferred_id.as_deref())?;
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
         Ok(())
     }
@@ -1006,8 +1035,8 @@ impl JourneyApp {
     fn reload_with_notice(&mut self) {
         let selected = self.selected_id();
         match self.reload_preserving(selected.as_deref()) {
-            Ok(()) => self.notice_success("reloaded Journeys"),
-            Err(err) => self.notice_error(format!("reload failed: {err}")),
+            Ok(()) => self.notify_success("reloaded Journeys"),
+            Err(err) => self.notify_error(format!("reload failed: {err}")),
         }
     }
 
@@ -1137,18 +1166,33 @@ impl JourneyApp {
         self.action_state.select(Some(self.action_selected));
     }
 
-    fn notice_success(&mut self, message: impl Into<String>) {
-        self.notice = Some(Notice {
+    fn notify(&mut self, message: impl Into<String>, level: NotificationLevel) {
+        let notification = Notification {
             message: message.into(),
-            is_error: false,
-        });
+            level,
+            created_at: Instant::now(),
+        };
+        self.toasts.push_back(notification.clone());
+        self.notification_history.push(notification);
+        if self.notification_history.len() > 100 {
+            self.notification_history.remove(0);
+        }
     }
 
-    fn notice_error(&mut self, message: impl Into<String>) {
-        self.notice = Some(Notice {
-            message: message.into(),
-            is_error: true,
-        });
+    fn notify_success(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Success);
+    }
+
+    fn notify_error(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Error);
+    }
+
+    fn prune_toasts(&mut self) {
+        self.toasts
+            .retain(|notification| notification.created_at.elapsed() < Duration::from_secs(3));
+        while self.toasts.len() > 3 {
+            self.toasts.pop_front();
+        }
     }
 }
 
@@ -1195,7 +1239,15 @@ impl StatusFilter {
     }
 }
 
-struct Notice {
+#[derive(Clone)]
+enum NotificationLevel {
+    Success,
+    Error,
+}
+
+#[derive(Clone)]
+struct Notification {
     message: String,
-    is_error: bool,
+    level: NotificationLevel,
+    created_at: Instant,
 }

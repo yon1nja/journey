@@ -1,13 +1,15 @@
 use super::*;
 
 pub(super) fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
+    app.prune_toasts();
+
     let area = frame.area();
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -33,6 +35,8 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
     }
 
     render_footer(frame, app, root[2]);
+    render_toasts(frame, app, area);
+    render_notification_history(frame, app, area);
     render_dialog(frame, app, area);
 }
 
@@ -338,20 +342,13 @@ pub(super) fn render_actions(frame: &mut Frame<'_>, app: &mut JourneyApp, area: 
 }
 
 pub(super) fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
-    let notice = app.notice.as_ref().map(|notice| {
-        let style = if notice.is_error {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default().fg(Color::Green)
-        };
-        Line::from(Span::styled(notice.message.clone(), style))
-    });
     let help = match app.screen {
         Screen::List => [
             format!("{} search", app.shortcuts.focus_search_display()),
             format!("{} details", app.shortcuts.focus_details_display()),
             format!("{} actions", app.shortcuts.open_actions_display()),
             format!("{} new", app.shortcuts.new_journey.display()),
+            "^N notifications".to_string(),
             format!("{} quit", app.shortcuts.quit_display()),
         ]
         .join("  "),
@@ -361,27 +358,123 @@ pub(super) fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect)
             app.shortcuts.confirm_display()
         ),
         Screen::Details => format!(
-            "Tab/S-Tab switch doc  {}/{} scroll  {} back",
+            "Tab/S-Tab switch doc  {}/{} scroll  ^N notifications  {} back",
             app.shortcuts.nav_up_display(),
             app.shortcuts.nav_down_display(),
             app.shortcuts.back_display()
         ),
         Screen::Actions => format!(
-            "{}/{} navigate  {} run  {} back",
+            "{}/{} navigate  {} run  ^N notifications  {} back",
             app.shortcuts.nav_up_display(),
             app.shortcuts.nav_down_display(),
             app.shortcuts.confirm_display(),
             app.shortcuts.back_display()
         ),
     };
-    let lines = vec![
-        notice.unwrap_or_else(|| Line::from("")),
-        Line::from(Span::styled(help, dim())),
-    ];
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::TOP)),
+        Paragraph::new(Line::from(Span::styled(help, dim())))
+            .block(Block::default().borders(Borders::TOP)),
         area,
     );
+}
+
+pub(super) fn render_toasts(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
+    if app.toasts.is_empty() {
+        return;
+    }
+
+    let max_width = (area.width * 30 / 100).clamp(20, 40);
+    let mut y = area.y + 1;
+
+    for toast in app.toasts.iter().rev().take(3) {
+        if y + 1 >= area.y + area.height {
+            break;
+        }
+        let style = match toast.level {
+            NotificationLevel::Success => Style::default().fg(Color::Black).bg(Color::Green),
+            NotificationLevel::Error => Style::default().fg(Color::White).bg(Color::Red),
+        };
+        let msg = if toast.message.len() > max_width as usize - 2 {
+            format!(" {}… ", &toast.message[..max_width as usize - 3])
+        } else {
+            format!(" {} ", &toast.message)
+        };
+        let width = msg.len().min(max_width as usize) as u16;
+        let x = area.x + area.width - width - 1;
+        let toast_area = Rect::new(x, y, width, 1);
+        frame.render_widget(Clear, toast_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(msg, style))),
+            toast_area,
+        );
+        y += 2;
+    }
+}
+
+pub(super) fn render_notification_history(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
+    if !app.show_notification_history {
+        return;
+    }
+
+    let area = centered_rect(60, 60, area);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Notifications ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.notification_history.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("No notifications yet", dim()))),
+            inner,
+        );
+        return;
+    }
+
+    let visible_height = inner.height as usize;
+    let items: Vec<ListItem> = app
+        .notification_history
+        .iter()
+        .rev()
+        .skip(app.notification_scroll)
+        .take(visible_height)
+        .map(|notification| {
+            let elapsed = relative_time(notification.created_at.elapsed());
+            let style = match notification.level {
+                NotificationLevel::Success => Style::default().fg(Color::Green),
+                NotificationLevel::Error => Style::default().fg(Color::Red),
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{elapsed:>8}"), dim()),
+                Span::raw("  "),
+                Span::styled(notification.message.clone(), style),
+            ]))
+        })
+        .collect();
+
+    let help = Line::from(Span::styled("j/k scroll  Esc close  Ctrl+n close", dim()));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    frame.render_widget(List::new(items), chunks[0]);
+    frame.render_widget(Paragraph::new(help), chunks[1]);
+}
+
+pub(super) fn relative_time(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 5 {
+        "just now".into()
+    } else if secs < 60 {
+        format!("{secs}s ago")
+    } else {
+        format!("{}m ago", secs / 60)
+    }
 }
 
 pub(super) fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
@@ -1000,5 +1093,34 @@ mod tests {
                 .symbol(),
             "\u{2588}"
         );
+    }
+
+    #[test]
+    fn relative_time_formats_durations() {
+        assert_eq!(relative_time(Duration::from_secs(2)), "just now");
+        assert_eq!(relative_time(Duration::from_secs(30)), "30s ago");
+        assert_eq!(relative_time(Duration::from_secs(90)), "1m ago");
+        assert_eq!(relative_time(Duration::from_secs(3600)), "60m ago");
+    }
+
+    #[test]
+    fn notification_prune_removes_expired_toasts() {
+        let now = Instant::now();
+        let mut toasts: VecDeque<Notification> = VecDeque::new();
+        toasts.push_back(Notification {
+            message: "old".into(),
+            level: NotificationLevel::Success,
+            created_at: now - Duration::from_secs(5),
+        });
+        toasts.push_back(Notification {
+            message: "new".into(),
+            level: NotificationLevel::Success,
+            created_at: now,
+        });
+
+        toasts.retain(|notification| notification.created_at.elapsed() < Duration::from_secs(3));
+
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].message, "new");
     }
 }
