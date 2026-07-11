@@ -1,9 +1,10 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, IsTerminal, Stderr, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -144,7 +145,10 @@ struct JourneyApp {
     action_selected: usize,
     action_state: ListState,
     dialog: Dialog,
-    notice: Option<Notice>,
+    toasts: VecDeque<Notification>,
+    notification_history: Vec<Notification>,
+    show_notification_history: bool,
+    notification_scroll: usize,
     doc_render_cache: DocRenderCache,
     output: Option<AppOutput>,
     should_quit: bool,
@@ -177,7 +181,10 @@ impl JourneyApp {
             action_selected: 0,
             action_state: ListState::default(),
             dialog: Dialog::None,
-            notice: None,
+            toasts: VecDeque::new(),
+            notification_history: Vec::new(),
+            show_notification_history: false,
+            notification_scroll: 0,
             doc_render_cache: DocRenderCache::default(),
             output: None,
             should_quit: false,
@@ -207,6 +214,28 @@ impl JourneyApp {
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
+            return Ok(());
+        }
+
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.show_notification_history = !self.show_notification_history;
+            self.notification_scroll = 0;
+            return Ok(());
+        }
+
+        if self.show_notification_history {
+            match key.code {
+                KeyCode::Esc => self.show_notification_history = false,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if self.notification_scroll + 1 < self.notification_history.len() {
+                        self.notification_scroll += 1;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.notification_scroll = self.notification_scroll.saturating_sub(1);
+                }
+                _ => {}
+            }
             return Ok(());
         }
 
@@ -525,7 +554,7 @@ impl JourneyApp {
                 };
                 let title = input.trim();
                 if title.is_empty() {
-                    self.notice_error("title is required");
+                    self.notify_error("title is required");
                 } else {
                     self.dialog = Dialog::NewDescription {
                         title: title.to_string(),
@@ -592,7 +621,7 @@ impl JourneyApp {
             }
             Err(err) => {
                 self.dialog = Dialog::None;
-                self.notice_error(format!("cannot create worktree: {err}"));
+                self.notify_error(format!("cannot create worktree: {err}"));
             }
         }
     }
@@ -610,7 +639,7 @@ impl JourneyApp {
                     state,
                 };
             }
-            Err(err) => self.notice_error(format!("cannot list branches: {err}")),
+            Err(err) => self.notify_error(format!("cannot list branches: {err}")),
         }
     }
 
@@ -631,7 +660,7 @@ impl JourneyApp {
             .and_then(|branch_idx| branches.get(*branch_idx))
             .cloned()
         else {
-            self.notice_error("no branch selected");
+            self.notify_error("no branch selected");
             return;
         };
 
@@ -649,7 +678,7 @@ impl JourneyApp {
                     Ok(None) => {}
                     Err(err) => {
                         self.dialog = Dialog::None;
-                        self.notice_error(format!("cannot inspect worktrees: {err}"));
+                        self.notify_error(format!("cannot inspect worktrees: {err}"));
                         return;
                     }
                 }
@@ -666,7 +695,7 @@ impl JourneyApp {
             }
             Err(err) => {
                 self.dialog = Dialog::None;
-                self.notice_error(format!("cannot create worktree: {err}"));
+                self.notify_error(format!("cannot create worktree: {err}"));
             }
         }
     }
@@ -725,7 +754,7 @@ impl JourneyApp {
             Ok(None) => {}
             Err(err) => {
                 self.dialog = Dialog::None;
-                self.notice_error(format!("cannot inspect worktrees: {err}"));
+                self.notify_error(format!("cannot inspect worktrees: {err}"));
                 return Ok(());
             }
         }
@@ -753,7 +782,7 @@ impl JourneyApp {
 
     fn execute_selected_action(&mut self) {
         let Some(action) = self.shortcuts.actions().get(self.action_selected).copied() else {
-            self.notice_error("no actions configured");
+            self.notify_error("no actions configured");
             return;
         };
         self.execute_action(action);
@@ -765,7 +794,7 @@ impl JourneyApp {
 
     fn execute_action(&mut self, action: TuiAction) {
         let Some(journey_id) = self.selected_id() else {
-            self.notice_error("no Journey selected");
+            self.notify_error("no Journey selected");
             return;
         };
 
@@ -774,8 +803,8 @@ impl JourneyApp {
                 let dir = storage::journey_dir(&self.home, &journey_id);
                 let command = cd_command(&dir);
                 match copy_to_clipboard(&command) {
-                    Ok(()) => self.notice_success("copied cd command to clipboard"),
-                    Err(err) => self.notice_error(format!("clipboard failed: {err}")),
+                    Ok(()) => self.notify_success("copied cd command to clipboard"),
+                    Err(err) => self.notify_error(format!("clipboard failed: {err}")),
                 }
             }
             TuiAction::OpenNvim => {
@@ -853,7 +882,7 @@ impl JourneyApp {
 
     fn open_unlink_dialog(&mut self, journey_id: &str) {
         match storage::resolve_context(&self.home, Some(journey_id), &self.cwd) {
-            Ok(ctx) if ctx.journey.repos.is_empty() => self.notice_error("no repos linked"),
+            Ok(ctx) if ctx.journey.repos.is_empty() => self.notify_error("no repos linked"),
             Ok(ctx) => {
                 let mut state = ListState::default();
                 state.select(Some(0));
@@ -864,7 +893,7 @@ impl JourneyApp {
                     state,
                 };
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
     }
 
@@ -879,7 +908,7 @@ impl JourneyApp {
             return Ok(());
         };
         let Some(repo) = repos.get(*selected) else {
-            self.notice_error("no repo selected");
+            self.notify_error("no repo selected");
             return Ok(());
         };
         let journey_id = journey_id.clone();
@@ -891,7 +920,7 @@ impl JourneyApp {
 
     fn open_delete_worktree_dialog(&mut self, journey_id: &str) {
         match storage::resolve_context(&self.home, Some(journey_id), &self.cwd) {
-            Ok(ctx) if ctx.journey.repos.is_empty() => self.notice_error("no worktrees linked"),
+            Ok(ctx) if ctx.journey.repos.is_empty() => self.notify_error("no worktrees linked"),
             Ok(ctx) => {
                 let mut state = ListState::default();
                 state.select(Some(0));
@@ -902,7 +931,7 @@ impl JourneyApp {
                     state,
                 };
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
     }
 
@@ -917,7 +946,7 @@ impl JourneyApp {
             return Ok(());
         };
         let Some(repo) = repos.get(*selected) else {
-            self.notice_error("no worktree selected");
+            self.notify_error("no worktree selected");
             return Ok(());
         };
         let journey_id = journey_id.clone();
@@ -934,7 +963,7 @@ impl JourneyApp {
         let journey_id = journey_id.clone();
         let text = input.trim().to_string();
         if text.is_empty() {
-            self.notice_error("capture text is required");
+            self.notify_error("capture text is required");
             return Ok(());
         }
 
@@ -957,7 +986,7 @@ impl JourneyApp {
                     repo_count: ctx.journey.repos.len(),
                 };
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
     }
 
@@ -978,11 +1007,11 @@ impl JourneyApp {
     ) -> Result<()> {
         match result {
             Ok(message) => {
-                self.notice_success(message);
+                self.notify_success(message);
                 self.screen = Screen::List;
                 self.reload_preserving(preferred_id.as_deref())?;
             }
-            Err(err) => self.notice_error(err.to_string()),
+            Err(err) => self.notify_error(err.to_string()),
         }
         Ok(())
     }
@@ -1003,8 +1032,8 @@ impl JourneyApp {
     fn reload_with_notice(&mut self) {
         let selected = self.selected_id();
         match self.reload_preserving(selected.as_deref()) {
-            Ok(()) => self.notice_success("reloaded Journeys"),
-            Err(err) => self.notice_error(format!("reload failed: {err}")),
+            Ok(()) => self.notify_success("reloaded Journeys"),
+            Err(err) => self.notify_error(format!("reload failed: {err}")),
         }
     }
 
@@ -1134,29 +1163,46 @@ impl JourneyApp {
         self.action_state.select(Some(self.action_selected));
     }
 
-    fn notice_success(&mut self, message: impl Into<String>) {
-        self.notice = Some(Notice {
+    fn notify(&mut self, message: impl Into<String>, level: NotificationLevel) {
+        let notification = Notification {
             message: message.into(),
-            is_error: false,
-        });
+            level,
+            created_at: Instant::now(),
+        };
+        self.toasts.push_back(notification.clone());
+        self.notification_history.push(notification);
+        if self.notification_history.len() > 100 {
+            self.notification_history.remove(0);
+        }
     }
 
-    fn notice_error(&mut self, message: impl Into<String>) {
-        self.notice = Some(Notice {
-            message: message.into(),
-            is_error: true,
-        });
+    fn notify_success(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Success);
+    }
+
+    fn notify_error(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Error);
+    }
+
+    fn prune_toasts(&mut self) {
+        self.toasts
+            .retain(|n| n.created_at.elapsed() < Duration::from_secs(3));
+        while self.toasts.len() > 3 {
+            self.toasts.pop_front();
+        }
     }
 }
 
 fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
+    app.prune_toasts();
+
     let area = frame.area();
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -1182,6 +1228,8 @@ fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
     }
 
     render_footer(frame, app, root[2]);
+    render_toasts(frame, app, area);
+    render_notification_history(frame, app, area);
     render_dialog(frame, app, area);
 }
 
@@ -1482,20 +1530,13 @@ fn render_actions(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
-    let notice = app.notice.as_ref().map(|notice| {
-        let style = if notice.is_error {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default().fg(Color::Green)
-        };
-        Line::from(Span::styled(notice.message.clone(), style))
-    });
     let help = match app.screen {
         Screen::List => [
             format!("{} search", app.shortcuts.focus_search_display()),
             format!("{} details", app.shortcuts.focus_details_display()),
             format!("{} actions", app.shortcuts.open_actions_display()),
             format!("{} new", app.shortcuts.new_journey.display()),
+            "^N notifications".to_string(),
             format!("{} quit", app.shortcuts.quit_display()),
         ]
         .join("  "),
@@ -1505,27 +1546,123 @@ fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
             app.shortcuts.confirm_display()
         ),
         Screen::Details => format!(
-            "Tab/S-Tab switch doc  {}/{} scroll  {} back",
+            "Tab/S-Tab switch doc  {}/{} scroll  ^N notifications  {} back",
             app.shortcuts.nav_up_display(),
             app.shortcuts.nav_down_display(),
             app.shortcuts.back_display()
         ),
         Screen::Actions => format!(
-            "{}/{} navigate  {} run  {} back",
+            "{}/{} navigate  {} run  ^N notifications  {} back",
             app.shortcuts.nav_up_display(),
             app.shortcuts.nav_down_display(),
             app.shortcuts.confirm_display(),
             app.shortcuts.back_display()
         ),
     };
-    let lines = vec![
-        notice.unwrap_or_else(|| Line::from("")),
-        Line::from(Span::styled(help, dim())),
-    ];
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::TOP)),
+        Paragraph::new(Line::from(Span::styled(help, dim())))
+            .block(Block::default().borders(Borders::TOP)),
         area,
     );
+}
+
+fn render_toasts(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
+    if app.toasts.is_empty() {
+        return;
+    }
+
+    let max_width = (area.width * 30 / 100).clamp(20, 40);
+    let mut y = area.y + 1;
+
+    for toast in app.toasts.iter().rev().take(3) {
+        if y + 1 >= area.y + area.height {
+            break;
+        }
+        let style = match toast.level {
+            NotificationLevel::Success => Style::default().fg(Color::Black).bg(Color::Green),
+            NotificationLevel::Error => Style::default().fg(Color::White).bg(Color::Red),
+        };
+        let msg = if toast.message.len() > max_width as usize - 2 {
+            format!(" {}… ", &toast.message[..max_width as usize - 3])
+        } else {
+            format!(" {} ", &toast.message)
+        };
+        let width = msg.len().min(max_width as usize) as u16;
+        let x = area.x + area.width - width - 1;
+        let toast_area = Rect::new(x, y, width, 1);
+        frame.render_widget(Clear, toast_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(msg, style))),
+            toast_area,
+        );
+        y += 2;
+    }
+}
+
+fn render_notification_history(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
+    if !app.show_notification_history {
+        return;
+    }
+
+    let area = centered_rect(60, 60, area);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Notifications ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.notification_history.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("No notifications yet", dim()))),
+            inner,
+        );
+        return;
+    }
+
+    let visible_height = inner.height as usize;
+    let items: Vec<ListItem> = app
+        .notification_history
+        .iter()
+        .rev()
+        .skip(app.notification_scroll)
+        .take(visible_height)
+        .map(|n| {
+            let elapsed = relative_time(n.created_at.elapsed());
+            let style = match n.level {
+                NotificationLevel::Success => Style::default().fg(Color::Green),
+                NotificationLevel::Error => Style::default().fg(Color::Red),
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{elapsed:>8}"), dim()),
+                Span::raw("  "),
+                Span::styled(n.message.clone(), style),
+            ]))
+        })
+        .collect();
+
+    let help = Line::from(Span::styled("j/k scroll  Esc close  Ctrl+n close", dim()));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    frame.render_widget(List::new(items), chunks[0]);
+    frame.render_widget(Paragraph::new(help), chunks[1]);
+}
+
+fn relative_time(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 5 {
+        "just now".into()
+    } else if secs < 60 {
+        format!("{secs}s ago")
+    } else {
+        format!("{}m ago", secs / 60)
+    }
 }
 
 fn render_dialog(frame: &mut Frame<'_>, app: &mut JourneyApp, area: Rect) {
@@ -2891,9 +3028,17 @@ enum Dialog {
     },
 }
 
-struct Notice {
+#[derive(Clone)]
+enum NotificationLevel {
+    Success,
+    Error,
+}
+
+#[derive(Clone)]
+struct Notification {
     message: String,
-    is_error: bool,
+    level: NotificationLevel,
+    created_at: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -3040,6 +3185,35 @@ mod tests {
         assert_eq!(branch_filter_indices(&branches, ""), vec![0, 1, 2]);
         assert_eq!(branch_filter_indices(&branches, "editor esm"), vec![1]);
         assert!(branch_filter_indices(&branches, "editor missing").is_empty());
+    }
+
+    #[test]
+    fn relative_time_formats_durations() {
+        assert_eq!(relative_time(Duration::from_secs(2)), "just now");
+        assert_eq!(relative_time(Duration::from_secs(30)), "30s ago");
+        assert_eq!(relative_time(Duration::from_secs(90)), "1m ago");
+        assert_eq!(relative_time(Duration::from_secs(3600)), "60m ago");
+    }
+
+    #[test]
+    fn notification_prune_removes_expired_toasts() {
+        let now = Instant::now();
+        let mut toasts: VecDeque<Notification> = VecDeque::new();
+        toasts.push_back(Notification {
+            message: "old".into(),
+            level: NotificationLevel::Success,
+            created_at: now - Duration::from_secs(5),
+        });
+        toasts.push_back(Notification {
+            message: "new".into(),
+            level: NotificationLevel::Success,
+            created_at: now,
+        });
+
+        toasts.retain(|n| n.created_at.elapsed() < Duration::from_secs(3));
+
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].message, "new");
     }
 
     fn plain_line(line: &Line<'_>) -> String {
