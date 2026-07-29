@@ -15,13 +15,93 @@ use serde::Deserialize;
 
 pub const CONFIG_FILE: &str = "config.toml";
 
-pub const DEFAULT_CONFIG_TOML: &str = r#"# Journey configuration.
+pub const DEFAULT_CONFIG_TOML: &str = r#"# ===========================================================================
+#  Journey — config.toml
+# ===========================================================================
 #
-# Shortcuts use single keys like "c", control keys like "ctrl+n",
-# or special keys: "esc", "enter".
+#  This file configures the Journey interactive TUI.
+#  Location: ~/.journey/config.toml
 #
-# Actions are shown in this order. Remove an action from order, or add it to
-# disabled, to hide it and disable its shortcut.
+#  Journey reads this file once at startup. To reload after editing,
+#  press Ctrl+R inside the TUI.
+#
+#  -----------------------------------------------------------------------
+#  KEY SYNTAX
+#  -----------------------------------------------------------------------
+#
+#  Each shortcut is a quoted string using one of these forms:
+#
+#    "c"           A single character key.
+#    "ctrl+n"      Control + a character ("ctrl-n" and "control+n" also work).
+#    "esc"         The Escape key ("escape" also works).
+#    "enter"       The Enter/Return key ("return" also works).
+#    "none"        Disable this shortcut entirely.
+#
+#  Keys are case-insensitive: "C" and "c" are the same binding.
+#  Two shortcuts in the same context cannot share the same key —
+#  Journey will refuse to start and print which keys conflict.
+#
+#  -----------------------------------------------------------------------
+#  TUI SCREENS
+#  -----------------------------------------------------------------------
+#
+#  The TUI has four screens. Which shortcuts are active depends on the
+#  current screen:
+#
+#    List      The main Journey list. Navigation keys move the selection;
+#              action shortcuts trigger on the selected Journey.
+#    Search    A search/filter bar is active. Typing goes into the search
+#              field; most shortcuts are suspended.
+#    Details   The right pane is focused, showing README or docs for the
+#              selected Journey. Scroll with navigation keys.
+#    Actions   A popup listing available actions for the selected Journey.
+#              Navigate and confirm to execute.
+#
+#  -----------------------------------------------------------------------
+#  HARDCODED KEYS (not configurable)
+#  -----------------------------------------------------------------------
+#
+#    Ctrl+C          Quit immediately (works on every screen).
+#    Ctrl+N          Toggle notification history overlay.
+#    Ctrl+R          Reload Journeys from disk.
+#    Tab / Shift+Tab Cycle the status filter (Active → Paused → All → …).
+#    Arrow keys      Same as nav_up / nav_down / nav_left / nav_right.
+#
+
+
+# ===========================================================================
+#  ACTIONS
+# ===========================================================================
+#
+#  Actions are operations you can perform on the selected Journey.
+#  They appear in the actions popup (opened with `open_actions`).
+#
+#  `order` controls which actions are visible and in what order.
+#  Only actions listed here appear in the popup and respond to shortcuts.
+#  Remove an action from `order` to hide it completely.
+#
+#  `disabled` hides actions and unbinds their shortcuts, without removing
+#  them from `order`. This is useful when you want to temporarily suppress
+#  an action but keep its position for later.
+#
+#  Available actions and what they do:
+#
+#    open_claude               Open Claude Code in the Journey's directory.
+#    open_nvim                 Open Neovim in the Journey's directory.
+#    new_branch_worktree       Create a new git branch + worktree and link it.
+#    existing_branch_worktree  Link an existing branch as a worktree.
+#    link_current              Link the current working directory's repo.
+#    unlink_repo               Detach a linked repository from the Journey.
+#    capture                   Append a quick text capture to a Journey doc.
+#    delete_worktree           Remove a linked worktree from disk and unlink it.
+#    done                      Mark the Journey as done.
+#    pause                     Mark the Journey as paused.
+#    archive                   Mark the Journey as archived.
+#    copy_cd                   Copy a `cd` command for the Journey to clipboard.
+#    resume                    Resume a paused/done Journey (mark active).
+#    abandon                   Mark the Journey as abandoned.
+#
+
 [actions]
 order = [
   "open_claude",
@@ -41,20 +121,68 @@ order = [
 ]
 disabled = []
 
+#  Examples:
+#
+#  Show only a few actions:
+#    order = ["open_claude", "capture", "pause", "resume", "done"]
+#
+#  Keep all actions but disable destructive ones:
+#    disabled = ["delete_worktree", "abandon"]
+
+
+# ===========================================================================
+#  SHORTCUTS
+# ===========================================================================
+#
+#  Shortcuts are split into two groups: navigation and actions.
+#
+#  Navigation shortcuts control movement and screen transitions.
+#  Action shortcuts trigger Journey operations from the list screen.
+#
+#  Set any shortcut to "none" to disable it without affecting others.
+#
+
 [shortcuts]
-# Navigation
+
+# ---------------------------------------------------------------------------
+#  Navigation
+# ---------------------------------------------------------------------------
+
+# Quit the TUI (from the list screen; on other screens, goes back first).
 quit = "q"
+
+# Go back: close popup, leave search, unfocus details, or quit from list.
 back = "esc"
+
+# Confirm: select an action in the popup, or open details from the list.
 confirm = "enter"
+
+# Focus the search bar. Type to filter Journeys by title. Esc to leave.
 focus_search = "/"
+
+# Focus the details pane (README / docs) for the selected Journey.
 focus_details = "l"
+
+# Open the actions popup for the selected Journey.
 open_actions = "enter"
+
+# Vim-style navigation. Also works with arrow keys (always available).
 nav_up = "k"
 nav_down = "j"
 nav_left = "h"
 nav_right = "l"
 
-# Actions
+# ---------------------------------------------------------------------------
+#  Action shortcuts
+# ---------------------------------------------------------------------------
+#
+#  These fire directly from the list screen without opening the actions
+#  popup. Only actions that appear in `actions.order` (and are not in
+#  `actions.disabled`) respond to their shortcut.
+#
+#  Set a shortcut to "none" to require using the actions popup instead.
+#
+
 new_journey = "ctrl+j"
 open_claude = "c"
 open_nvim = "n"
@@ -70,6 +198,17 @@ archive = "x"
 copy_cd = "none"
 resume = "none"
 abandon = "none"
+
+#  Examples:
+#
+#  Remap open_claude to "o":
+#    open_claude = "o"
+#
+#  Add a shortcut for copy_cd:
+#    copy_cd = "y"
+#
+#  Disable a shortcut (action is still available in the popup):
+#    delete_worktree = "none"
 "#;
 
 #[derive(Debug, Clone)]
@@ -588,5 +727,10 @@ mod tests {
         let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
         assert!(binding.matches(event));
         assert_eq!(binding.display(), "Enter");
+    }
+
+    #[test]
+    fn default_config_toml_parses_successfully() {
+        ShortcutConfig::from_toml(DEFAULT_CONFIG_TOML).unwrap();
     }
 }
