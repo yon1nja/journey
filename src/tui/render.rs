@@ -3,6 +3,8 @@ use super::*;
 pub(super) fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
     app.prune_toasts();
 
+    let area = frame.area();
+
     if app.screen == Screen::Workspace {
         workspace::render_workspace(
             frame,
@@ -11,10 +13,11 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
             app.selected,
             &app.workspace,
         );
+        render_toasts(frame, app, area);
+        render_notification_history(frame, app, area);
         return;
     }
 
-    let area = frame.area();
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

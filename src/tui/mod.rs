@@ -229,12 +229,21 @@ impl JourneyApp {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        let in_terminal = self.screen == Screen::Workspace
+            && self.workspace.focus == workspace::Focus::Terminal;
+
+        if !in_terminal
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
             self.should_quit = true;
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if !in_terminal
+            && key.code == KeyCode::Char('n')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
             self.show_notification_history = !self.show_notification_history;
             self.notification_scroll = 0;
             return Ok(());
