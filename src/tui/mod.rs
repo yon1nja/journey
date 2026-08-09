@@ -1,6 +1,7 @@
 mod dialog;
 mod markdown;
 mod render;
+mod terminal_emulator;
 
 use std::collections::VecDeque;
 use std::fs;
