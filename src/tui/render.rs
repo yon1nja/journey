@@ -3,6 +3,17 @@ use super::*;
 pub(super) fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
     app.prune_toasts();
 
+    if app.screen == Screen::Workspace {
+        workspace::render_workspace(
+            frame,
+            &app.rows,
+            &app.filtered,
+            app.selected,
+            &app.workspace,
+        );
+        return;
+    }
+
     let area = frame.area();
     let root = Layout::default()
         .direction(Direction::Vertical)
@@ -107,7 +118,9 @@ pub(super) fn render_journey_list(frame: &mut Frame<'_>, app: &mut JourneyApp, a
         .borders(Borders::ALL)
         .border_style(match app.screen {
             Screen::List | Screen::Search => accent(),
-            Screen::Details | Screen::Actions => Style::default().fg(Color::DarkGray),
+            Screen::Details | Screen::Actions | Screen::Workspace => {
+                Style::default().fg(Color::DarkGray)
+            }
         });
     let header = Row::new([
         Cell::from("Journey"),
@@ -370,6 +383,9 @@ pub(super) fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect)
             app.shortcuts.confirm_display(),
             app.shortcuts.back_display()
         ),
+        Screen::Workspace => {
+            "^H focus  j/k select  Enter open  t tab  x close  [ ] switch  Esc back".to_string()
+        }
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(help, dim())))

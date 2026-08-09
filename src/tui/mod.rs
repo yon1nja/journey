@@ -1,7 +1,7 @@
 mod dialog;
 mod markdown;
 mod render;
-mod terminal_emulator;
+pub(super) mod terminal_emulator;
 pub(super) mod workspace;
 
 use std::collections::VecDeque;
@@ -157,6 +157,7 @@ struct JourneyApp {
     doc_render_cache: DocRenderCache,
     output: Option<AppOutput>,
     should_quit: bool,
+    workspace: workspace::WorkspaceState,
 }
 
 enum AppOutput {
@@ -193,6 +194,7 @@ impl JourneyApp {
             doc_render_cache: DocRenderCache::default(),
             output: None,
             should_quit: false,
+            workspace: workspace::WorkspaceState::new(),
         };
         app.reload()?;
         Ok(app)
@@ -206,11 +208,21 @@ impl JourneyApp {
                 return Ok(self.output.take().unwrap_or(AppOutput::None));
             }
 
-            if event::poll(Duration::from_millis(200))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
+            let tick = if self.screen == Screen::Workspace {
+                Duration::from_millis(16)
+            } else {
+                Duration::from_millis(200)
+            };
+
+            if event::poll(tick)? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_key(key)?;
                     }
+                    Event::Resize(_, _) if self.screen == Screen::Workspace => {
+                        self.resize_active_terminals()?;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -250,6 +262,7 @@ impl JourneyApp {
                 Screen::Search => self.handle_search_key(key),
                 Screen::Details => self.handle_details_key(key),
                 Screen::Actions => self.handle_action_key(key),
+                Screen::Workspace => self.handle_workspace_key(key)?,
             }
             return Ok(());
         }
@@ -414,7 +427,18 @@ impl JourneyApp {
                     self.screen = Screen::Details;
                 }
             }
-            Some(ShortcutCommand::OpenActions) | Some(ShortcutCommand::Confirm) => {
+            Some(ShortcutCommand::Confirm) => {
+                if self.filtered.is_empty() {
+                    return;
+                }
+                self.screen = Screen::Workspace;
+                self.sync_workspace_selection();
+                if let Err(err) = self.open_workspace_terminal() {
+                    self.screen = Screen::List;
+                    self.notify_error(format!("failed to open terminal: {err}"));
+                }
+            }
+            Some(ShortcutCommand::OpenActions) => {
                 if self.selected_entry().is_some() {
                     self.screen = Screen::Actions;
                     self.action_selected = 0;
@@ -547,6 +571,124 @@ impl JourneyApp {
             Some(ShortcutCommand::Action(action)) => self.execute_shortcut_action(action),
             _ => {}
         }
+    }
+
+    fn handle_workspace_key(&mut self, key: KeyEvent) -> Result<()> {
+        use workspace::Focus;
+
+        // Ctrl+H toggles focus between sidebar and terminal.
+        if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.workspace.toggle_focus();
+            return Ok(());
+        }
+
+        // Ctrl+Q always quits, even while a terminal has focus.
+        if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return Ok(());
+        }
+
+        match self.workspace.focus {
+            Focus::Terminal => {
+                if let Some(terminal) = self.workspace.active_terminal() {
+                    terminal.write_key(&key);
+                }
+            }
+            Focus::Sidebar => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.selected > 0 {
+                        self.selected -= 1;
+                        self.sync_workspace_selection();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.selected + 1 < self.filtered.len() {
+                        self.selected += 1;
+                        self.sync_workspace_selection();
+                    }
+                }
+                KeyCode::Enter => {
+                    self.open_workspace_terminal()?;
+                }
+                KeyCode::Char('t') => {
+                    self.open_additional_tab()?;
+                }
+                KeyCode::Char('x') => {
+                    self.workspace.close_active_tab();
+                }
+                KeyCode::Char(']') => {
+                    self.workspace.next_tab();
+                }
+                KeyCode::Char('[') => {
+                    self.workspace.prev_tab();
+                }
+                KeyCode::Esc => {
+                    self.screen = Screen::List;
+                }
+                KeyCode::Char('d') if self.selected_entry().is_some() => {
+                    self.screen = Screen::Details;
+                }
+                _ => {}
+            },
+        }
+        Ok(())
+    }
+
+    fn sync_workspace_selection(&mut self) {
+        if let Some(&idx) = self.filtered.get(self.selected) {
+            let id = self.rows[idx].id.clone();
+            self.workspace.select_journey(&id);
+        }
+    }
+
+    fn open_workspace_terminal(&mut self) -> Result<()> {
+        if let Some(&idx) = self.filtered.get(self.selected) {
+            let entry = &self.rows[idx];
+            let journey_id = entry.id.clone();
+            let journey_title = entry.title.clone();
+
+            if self.workspace.has_tabs(&journey_id) {
+                self.workspace.select_journey(&journey_id);
+                self.workspace.focus = workspace::Focus::Terminal;
+            } else {
+                let cwd = storage::journey_dir(&self.home, &journey_id);
+                let (rows, cols) = self.terminal_area_size();
+                self.workspace
+                    .open_tab(&journey_id, &journey_title, &cwd, rows, cols)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn open_additional_tab(&mut self) -> Result<()> {
+        if let Some(&idx) = self.filtered.get(self.selected) {
+            let entry = &self.rows[idx];
+            let journey_id = entry.id.clone();
+            let journey_title = entry.title.clone();
+            let cwd = storage::journey_dir(&self.home, &journey_id);
+            let (rows, cols) = self.terminal_area_size();
+            self.workspace
+                .open_tab(&journey_id, &journey_title, &cwd, rows, cols)?;
+        }
+        Ok(())
+    }
+
+    fn terminal_area_size(&self) -> (u16, u16) {
+        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let sidebar_width: u16 = 30;
+        let border_overhead: u16 = 2;
+        let tab_bar: u16 = 1;
+        let cols = term_cols.saturating_sub(sidebar_width + border_overhead);
+        let rows = term_rows.saturating_sub(border_overhead + tab_bar);
+        (rows, cols)
+    }
+
+    fn resize_active_terminals(&mut self) -> Result<()> {
+        let (rows, cols) = self.terminal_area_size();
+        if let Some(terminal) = self.workspace.active_terminal() {
+            terminal.resize(rows, cols)?;
+        }
+        Ok(())
     }
 
     fn apply_dialog_action(&mut self, action: DialogAction) -> Result<()> {
@@ -1204,6 +1346,7 @@ enum Screen {
     Search,
     Details,
     Actions,
+    Workspace,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
