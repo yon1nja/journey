@@ -18,7 +18,8 @@ pub struct TerminalTab {
 
 struct JourneyTabs {
     tabs: Vec<TerminalTab>,
-    active: usize,
+    /// 0 = Details tab, 1+ = terminal tab (1-based index into `tabs`)
+    right_pane_tab: usize,
 }
 
 pub struct WorkspaceState {
@@ -64,10 +65,10 @@ impl WorkspaceState {
             .entry(journey_id.to_string())
             .or_insert_with(|| JourneyTabs {
                 tabs: Vec::new(),
-                active: 0,
+                right_pane_tab: 0,
             });
         entry.tabs.push(tab);
-        entry.active = entry.tabs.len() - 1;
+        entry.right_pane_tab = entry.tabs.len(); // 1-based: point to the new tab
         self.selected_journey = Some(journey_id.to_string());
         self.focus = Focus::Terminal;
         Ok(())
@@ -77,16 +78,18 @@ impl WorkspaceState {
         let id = self.selected_journey.clone();
         if let Some(id) = &id {
             if let Some(entry) = self.journals.get_mut(id) {
-                if !entry.tabs.is_empty() {
-                    entry.tabs.remove(entry.active);
-                    if entry.active >= entry.tabs.len() && entry.active > 0 {
-                        entry.active -= 1;
-                    }
+                if entry.right_pane_tab == 0 || entry.tabs.is_empty() {
+                    return; // Can't close the Details tab
                 }
+                let terminal_idx = entry.right_pane_tab - 1;
+                entry.tabs.remove(terminal_idx);
                 if entry.tabs.is_empty() {
                     self.journals.remove(id);
                     self.focus = Focus::Sidebar;
+                } else if terminal_idx >= entry.tabs.len() {
+                    entry.right_pane_tab = entry.tabs.len(); // clamp to last
                 }
+                // else: right_pane_tab stays, next terminal slides into this index
             }
         }
     }
@@ -94,7 +97,18 @@ impl WorkspaceState {
     pub fn active_terminal(&self) -> Option<&EmbeddedTerminal> {
         let id = self.selected_journey.as_ref()?;
         let entry = self.journals.get(id)?;
-        entry.tabs.get(entry.active).map(|t| &t.terminal)
+        if entry.right_pane_tab == 0 {
+            return None;
+        }
+        entry
+            .tabs
+            .get(entry.right_pane_tab - 1)
+            .map(|t| &t.terminal)
+    }
+
+    /// Returns true when the right pane is showing a terminal tab (not the Details tab).
+    pub fn active_tab_is_terminal(&self) -> bool {
+        self.active_terminal().is_some()
     }
 
     pub fn tabs_for_selected(&self) -> &[TerminalTab] {
@@ -105,11 +119,12 @@ impl WorkspaceState {
             .unwrap_or(&[])
     }
 
-    pub fn active_tab_index(&self) -> usize {
+    /// The current right-pane tab index: 0 = Details, 1+ = terminal tab.
+    pub fn right_pane_tab(&self) -> usize {
         self.selected_journey
             .as_ref()
             .and_then(|id| self.journals.get(id))
-            .map(|e| e.active)
+            .map(|e| e.right_pane_tab)
             .unwrap_or(0)
     }
 
@@ -120,28 +135,35 @@ impl WorkspaceState {
             .unwrap_or(false)
     }
 
+    /// Cycle to the next right-pane tab (Details -> Term1 -> Term2 -> ... -> Details).
     pub fn next_tab(&mut self) {
         if let Some(id) = &self.selected_journey {
             if let Some(entry) = self.journals.get_mut(id) {
                 if !entry.tabs.is_empty() {
-                    entry.active = (entry.active + 1) % entry.tabs.len();
+                    let total = entry.tabs.len() + 1; // +1 for Details tab
+                    entry.right_pane_tab = (entry.right_pane_tab + 1) % total;
                 }
             }
         }
     }
 
+    /// Cycle to the previous right-pane tab.
     pub fn prev_tab(&mut self) {
         if let Some(id) = &self.selected_journey {
             if let Some(entry) = self.journals.get_mut(id) {
                 if !entry.tabs.is_empty() {
-                    entry.active = entry.active.checked_sub(1).unwrap_or(entry.tabs.len() - 1);
+                    let total = entry.tabs.len() + 1;
+                    entry.right_pane_tab = entry
+                        .right_pane_tab
+                        .checked_sub(1)
+                        .unwrap_or(total - 1);
                 }
             }
         }
     }
 
     pub fn toggle_focus(&mut self) {
-        if self.active_terminal().is_some() {
+        if self.active_tab_is_terminal() {
             self.focus = match self.focus {
                 Focus::Sidebar => Focus::Terminal,
                 Focus::Terminal => Focus::Sidebar,
@@ -156,10 +178,12 @@ impl Default for WorkspaceState {
     }
 }
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+// ── Rendering helpers ────────────────────────────────────────────────
+
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
+use ratatui::widgets::Tabs;
 use ratatui::Frame;
 
 use alacritty_terminal::grid::Dimensions;
@@ -168,167 +192,35 @@ use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::Color as AnsiColor;
 use alacritty_terminal::vte::ansi::NamedColor;
 
-use crate::models::IndexEntry;
-
 use super::ACCENT;
 
-/// Renders the workspace screen: a sidebar list of journeys on the left and
-/// the active terminal grid (with tab bar, if multiple tabs) on the right.
-pub(super) fn render_workspace(
-    frame: &mut Frame,
-    entries: &[IndexEntry],
-    filtered: &[usize],
-    selected: usize,
-    workspace: &WorkspaceState,
-) {
-    let area = frame.area();
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(30), Constraint::Min(1)])
-        .split(rows[0]);
-
-    render_sidebar(frame, chunks[0], entries, filtered, selected, workspace);
-    render_terminal_area(frame, chunks[1], workspace);
-    render_workspace_footer(frame, rows[1], workspace);
-}
-
-fn render_workspace_footer(frame: &mut Frame, area: Rect, workspace: &WorkspaceState) {
-    let help = match workspace.focus {
-        Focus::Sidebar => {
-            "↑↓ navigate  ↵ open  t new tab  x close  [] tabs  ^H focus  Esc back"
-        }
-        Focus::Terminal => "^H sidebar  ^Q quit",
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(help, super::render::dim())))
-            .block(Block::default().borders(Borders::TOP)),
-        area,
-    );
-}
-
-fn render_sidebar(
+/// Renders the tab bar for the right pane: [Details | Term 1 | Term 2 | ...]
+pub(super) fn render_right_pane_tab_bar(
     frame: &mut Frame,
     area: Rect,
-    entries: &[IndexEntry],
-    filtered: &[usize],
-    selected: usize,
     workspace: &WorkspaceState,
 ) {
-    let is_focused = workspace.focus == Focus::Sidebar;
-    let border_style = if is_focused {
-        Style::default().fg(ACCENT)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let terminal_tabs = workspace.tabs_for_selected();
+    let active = workspace.right_pane_tab();
 
-    let block = Block::default()
-        .title(" Journeys ")
-        .borders(Borders::ALL)
-        .border_style(border_style);
+    let mut titles: Vec<Line> = vec![Line::from(Span::raw(" Details "))];
+    for (i, _tab) in terminal_tabs.iter().enumerate() {
+        titles.push(Line::from(Span::raw(format!(" Term {} ", i + 1))));
+    }
 
-    let items: Vec<ListItem> = filtered
-        .iter()
-        .map(|&idx| {
-            let entry = &entries[idx];
-            let has_tabs = workspace.has_tabs(&entry.id);
-            let marker = if has_tabs { "\u{25cf} " } else { "  " };
-            let style = if has_tabs {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(marker, style),
-                Span::raw(entry.title.clone()),
-            ]))
-        })
-        .collect();
-
-    let mut state = ListState::default();
-    state.select(Some(selected));
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-
-    frame.render_stateful_widget(list, area, &mut state);
+    let tab_bar = Tabs::new(titles)
+        .select(active)
+        .highlight_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(tab_bar, area);
 }
 
-fn render_terminal_area(frame: &mut Frame, area: Rect, workspace: &WorkspaceState) {
-    let tabs = workspace.tabs_for_selected();
-    let is_focused = workspace.focus == Focus::Terminal;
-
-    if tabs.is_empty() {
-        let border_style = Style::default().fg(Color::DarkGray);
-        let block = Block::default()
-            .title(" Terminal ")
-            .borders(Borders::ALL)
-            .border_style(border_style);
-        let msg = Paragraph::new("\n  Select a journey and press Enter")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(msg, area);
-        return;
-    }
-
-    let active_idx = workspace.active_tab_index();
-
-    let has_tab_bar = tabs.len() > 1;
-    let chunks = if has_tab_bar {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(0), Constraint::Min(1)])
-            .split(area)
-    };
-
-    if has_tab_bar {
-        let tab_titles: Vec<Line> = tabs
-            .iter()
-            .enumerate()
-            .map(|(i, _tab)| {
-                let label = format!(" {} ", i + 1);
-                if i == active_idx {
-                    Line::from(Span::styled(label, Style::default().fg(ACCENT)))
-                } else {
-                    Line::from(Span::raw(label))
-                }
-            })
-            .collect();
-        let tab_bar = Tabs::new(tab_titles).select(active_idx);
-        frame.render_widget(tab_bar, chunks[0]);
-    }
-
-    let border_style = if is_focused {
-        Style::default().fg(ACCENT)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let block = Block::default()
-        .title(format!(" {} ", tabs[active_idx].title))
-        .borders(Borders::ALL)
-        .border_style(border_style);
-    let inner = block.inner(chunks[1]);
-    frame.render_widget(block, chunks[1]);
-
-    if let Some(terminal) = workspace.active_terminal() {
-        render_term_grid(frame, inner, terminal);
-    }
-}
-
-fn render_term_grid(frame: &mut Frame, area: Rect, terminal: &EmbeddedTerminal) {
+/// Renders the terminal grid content from an embedded terminal into the given area.
+/// Also renders the cursor position with reversed colors.
+pub(super) fn render_term_grid(frame: &mut Frame, area: Rect, terminal: &EmbeddedTerminal) {
     terminal.with_term(|term| {
         let grid = term.grid();
+        let cursor_point = grid.cursor.point;
         let buf = frame.buffer_mut();
         let buf_area = *buf.area();
 
@@ -346,7 +238,12 @@ fn render_term_grid(frame: &mut Frame, area: Rect, terminal: &EmbeddedTerminal) 
                 if x < buf_area.right() && y < buf_area.bottom() {
                     let buf_cell = &mut buf[(x, y)];
                     buf_cell.set_char(cell.c);
-                    buf_cell.set_style(cell_style(cell));
+                    let mut style = cell_style(cell);
+                    // Render cursor with reversed colors
+                    if point == cursor_point {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
+                    buf_cell.set_style(style);
                 }
             }
         }

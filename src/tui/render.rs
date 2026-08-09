@@ -5,19 +5,6 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut JourneyApp) {
 
     let area = frame.area();
 
-    if app.screen == Screen::Workspace {
-        workspace::render_workspace(
-            frame,
-            &app.rows,
-            &app.filtered,
-            app.selected,
-            &app.workspace,
-        );
-        render_toasts(frame, app, area);
-        render_notification_history(frame, app, area);
-        return;
-    }
-
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -121,9 +108,7 @@ pub(super) fn render_journey_list(frame: &mut Frame<'_>, app: &mut JourneyApp, a
         .borders(Borders::ALL)
         .border_style(match app.screen {
             Screen::List | Screen::Search => accent(),
-            Screen::Details | Screen::Actions | Screen::Workspace => {
-                Style::default().fg(Color::DarkGray)
-            }
+            Screen::Details | Screen::Actions => Style::default().fg(Color::DarkGray),
         });
     let header = Row::new([
         Cell::from("Journey"),
@@ -171,13 +156,60 @@ pub(super) fn render_details_pane(
     area: Rect,
     focused: bool,
 ) {
+    let has_terminal_tabs = !app.workspace.tabs_for_selected().is_empty();
+    let right_pane_tab = app.workspace.right_pane_tab();
+    let is_terminal_active = right_pane_tab > 0 && app.workspace.active_tab_is_terminal();
+
+    // Determine border highlight: accent when focused, or when terminal is focused
+    let is_highlighted = focused
+        || (is_terminal_active && app.workspace.focus == workspace::Focus::Terminal);
+
     let block = Block::default()
-        .title(" Details ")
+        .title(if !has_terminal_tabs {
+            " Details "
+        } else {
+            "" // tab bar replaces title
+        })
         .borders(Borders::ALL)
-        .border_style(if focused { accent() } else { Style::default() });
+        .border_style(if is_highlighted {
+            accent()
+        } else {
+            Style::default()
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // If there are terminal tabs, render the tab bar and split the inner area
+    if has_terminal_tabs {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(inner);
+
+        workspace::render_right_pane_tab_bar(frame, chunks[0], &app.workspace);
+
+        if is_terminal_active {
+            // Render terminal grid
+            if let Some(terminal) = app.workspace.active_terminal() {
+                workspace::render_term_grid(frame, chunks[1], terminal);
+            }
+            return;
+        }
+
+        // Details tab with tab bar: render details content below the tab bar
+        render_details_content(frame, app, chunks[1], focused);
+    } else {
+        // No terminal tabs: render details content in the full inner area
+        render_details_content(frame, app, inner, focused);
+    }
+}
+
+fn render_details_content(
+    frame: &mut Frame<'_>,
+    app: &mut JourneyApp,
+    area: Rect,
+    focused: bool,
+) {
     let meta = metadata_lines(app);
 
     let journey_path = app
@@ -189,7 +221,7 @@ pub(super) fn render_details_pane(
         .unwrap_or_default();
 
     if tabs.is_empty() {
-        let mut content_area = inner;
+        let mut content_area = area;
         let mut content_height = wrapped_line_count(&meta, content_area.width);
         let viewport_height = usize::from(content_area.height);
         let is_scrollable = content_height > viewport_height;
@@ -208,7 +240,7 @@ pub(super) fn render_details_pane(
         );
         render_details_scrollbar(
             frame,
-            inner,
+            area,
             app.details_scroll,
             app.details_viewport_height,
             max_scroll,
@@ -217,8 +249,7 @@ pub(super) fn render_details_pane(
         return;
     }
 
-    let meta_height = wrapped_line_count(&meta, inner.width) as u16;
-    // ponytail: +1 blank line between metadata and tab bar, +1 separator below tab bar
+    let meta_height = wrapped_line_count(&meta, area.width) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -227,7 +258,7 @@ pub(super) fn render_details_pane(
             Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .split(inner);
+        .split(area);
 
     frame.render_widget(
         Paragraph::new(Text::from(meta)).wrap(Wrap { trim: false }),
@@ -359,26 +390,50 @@ pub(super) fn render_actions(frame: &mut Frame<'_>, app: &mut JourneyApp, area: 
 
 pub(super) fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect) {
     let help = match app.screen {
-        Screen::List => [
-            format!("{} search", app.shortcuts.focus_search_display()),
-            format!("{} details", app.shortcuts.focus_details_display()),
-            format!("{} actions", app.shortcuts.open_actions_display()),
-            format!("{} new", app.shortcuts.new_journey.display()),
-            "^N notifications".to_string(),
-            format!("{} quit", app.shortcuts.quit_display()),
-        ]
-        .join("  "),
+        Screen::List => {
+            let mut parts = vec![
+                format!("{} search", app.shortcuts.focus_search_display()),
+                format!("{} details", app.shortcuts.focus_details_display()),
+                format!("{} actions", app.shortcuts.open_actions_display()),
+                format!("{} new", app.shortcuts.new_journey.display()),
+            ];
+            let has_terminal = app
+                .selected_id()
+                .map(|id| app.workspace.has_tabs(&id))
+                .unwrap_or(false);
+            if has_terminal {
+                parts.push("t tab  x close  [] switch  ^H terminal".to_string());
+            }
+            parts.push("^N notifications".to_string());
+            parts.push(format!("{} quit", app.shortcuts.quit_display()));
+            parts.join("  ")
+        }
         Screen::Search => format!(
             "{} clear/exit  {} go to list",
             app.shortcuts.back_display(),
             app.shortcuts.confirm_display()
         ),
-        Screen::Details => format!(
-            "Tab/S-Tab switch doc  {}/{} scroll  ^N notifications  {} back",
-            app.shortcuts.nav_up_display(),
-            app.shortcuts.nav_down_display(),
-            app.shortcuts.back_display()
-        ),
+        Screen::Details => {
+            if app.workspace.focus == workspace::Focus::Terminal
+                && app.workspace.active_tab_is_terminal()
+            {
+                "^H sidebar  ^Q quit".to_string()
+            } else if !app.workspace.tabs_for_selected().is_empty() {
+                format!(
+                    "[] tabs  t new  x close  Tab/S-Tab docs  {}/{} scroll  {} back",
+                    app.shortcuts.nav_up_display(),
+                    app.shortcuts.nav_down_display(),
+                    app.shortcuts.back_display()
+                )
+            } else {
+                format!(
+                    "Tab/S-Tab switch doc  {}/{} scroll  ^N notifications  {} back",
+                    app.shortcuts.nav_up_display(),
+                    app.shortcuts.nav_down_display(),
+                    app.shortcuts.back_display()
+                )
+            }
+        }
         Screen::Actions => format!(
             "{}/{} navigate  {} run  ^N notifications  {} back",
             app.shortcuts.nav_up_display(),
@@ -386,12 +441,6 @@ pub(super) fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect)
             app.shortcuts.confirm_display(),
             app.shortcuts.back_display()
         ),
-        Screen::Workspace => match app.workspace.focus {
-            workspace::Focus::Sidebar => {
-                "↑↓ navigate  ↵ open  t new tab  x close  [] tabs  ^H focus  Esc back".to_string()
-            }
-            workspace::Focus::Terminal => "^H sidebar  ^Q quit".to_string(),
-        },
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(help, dim())))

@@ -208,7 +208,9 @@ impl JourneyApp {
                 return Ok(self.output.take().unwrap_or(AppOutput::None));
             }
 
-            let tick = if self.screen == Screen::Workspace {
+            let tick = if self.screen == Screen::Details
+                && self.workspace.active_tab_is_terminal()
+            {
                 Duration::from_millis(16)
             } else {
                 Duration::from_millis(200)
@@ -219,7 +221,7 @@ impl JourneyApp {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_key(key)?;
                     }
-                    Event::Resize(_, _) if self.screen == Screen::Workspace => {
+                    Event::Resize(_, _) if self.screen == Screen::Details => {
                         self.resize_active_terminals()?;
                     }
                     _ => {}
@@ -229,8 +231,9 @@ impl JourneyApp {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        let in_terminal = self.screen == Screen::Workspace
-            && self.workspace.focus == workspace::Focus::Terminal;
+        let in_terminal = self.screen == Screen::Details
+            && self.workspace.focus == workspace::Focus::Terminal
+            && self.workspace.active_tab_is_terminal();
 
         if !in_terminal
             && key.code == KeyCode::Char('c')
@@ -269,9 +272,8 @@ impl JourneyApp {
             match self.screen {
                 Screen::List => self.handle_list_key(key),
                 Screen::Search => self.handle_search_key(key),
-                Screen::Details => self.handle_details_key(key),
+                Screen::Details => self.handle_details_key(key)?,
                 Screen::Actions => self.handle_action_key(key),
-                Screen::Workspace => self.handle_workspace_key(key)?,
             }
             return Ok(());
         }
@@ -440,11 +442,11 @@ impl JourneyApp {
                 if self.filtered.is_empty() {
                     return;
                 }
-                self.screen = Screen::Workspace;
                 self.sync_workspace_selection();
                 if let Err(err) = self.open_workspace_terminal() {
-                    self.screen = Screen::List;
                     self.notify_error(format!("failed to open terminal: {err}"));
+                } else {
+                    self.screen = Screen::Details;
                 }
             }
             Some(ShortcutCommand::OpenActions) => {
@@ -468,6 +470,31 @@ impl JourneyApp {
                         self.action_selected = 0;
                         self.action_state.select(Some(0));
                     }
+                }
+                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.sync_workspace_selection();
+                    if self.workspace.active_tab_is_terminal() {
+                        self.workspace.focus = workspace::Focus::Terminal;
+                        self.screen = Screen::Details;
+                    }
+                }
+                KeyCode::Char('t') => {
+                    self.sync_workspace_selection();
+                    if let Err(err) = self.open_additional_tab() {
+                        self.notify_error(format!("failed to open terminal: {err}"));
+                    }
+                }
+                KeyCode::Char('x') => {
+                    self.sync_workspace_selection();
+                    self.workspace.close_active_tab();
+                }
+                KeyCode::Char(']') => {
+                    self.sync_workspace_selection();
+                    self.workspace.next_tab();
+                }
+                KeyCode::Char('[') => {
+                    self.sync_workspace_selection();
+                    self.workspace.prev_tab();
                 }
                 _ => {}
             },
@@ -508,7 +535,41 @@ impl JourneyApp {
         }
     }
 
-    fn handle_details_key(&mut self, key: KeyEvent) {
+    fn handle_details_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Ctrl+H toggles focus between sidebar and terminal.
+        if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.workspace.active_tab_is_terminal() {
+                self.workspace.toggle_focus();
+                if self.workspace.focus == workspace::Focus::Sidebar {
+                    self.screen = Screen::List;
+                }
+            } else {
+                self.screen = Screen::List;
+            }
+            return Ok(());
+        }
+
+        // Ctrl+Q always quits when in terminal mode.
+        if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.workspace.active_tab_is_terminal()
+                && self.workspace.focus == workspace::Focus::Terminal
+            {
+                self.should_quit = true;
+                return Ok(());
+            }
+        }
+
+        // When a terminal tab is active and focused, forward all keys to PTY.
+        if self.workspace.focus == workspace::Focus::Terminal
+            && self.workspace.active_tab_is_terminal()
+        {
+            if let Some(terminal) = self.workspace.active_terminal() {
+                terminal.write_key(&key);
+            }
+            return Ok(());
+        }
+
+        // Regular details key handling (Details tab or sidebar-focused).
         match self.shortcuts.command(key) {
             Some(ShortcutCommand::Quit) => {
                 self.should_quit = true;
@@ -561,9 +622,24 @@ impl JourneyApp {
                 KeyCode::PageDown => self.scroll_details_down(self.details_page_step()),
                 KeyCode::Home => self.details_scroll = 0,
                 KeyCode::End => self.details_scroll = usize::MAX,
+                KeyCode::Char(']') => {
+                    self.workspace.next_tab();
+                }
+                KeyCode::Char('[') => {
+                    self.workspace.prev_tab();
+                }
+                KeyCode::Char('t') => {
+                    if let Err(err) = self.open_additional_tab() {
+                        self.notify_error(format!("failed to open terminal: {err}"));
+                    }
+                }
+                KeyCode::Char('x') => {
+                    self.workspace.close_active_tab();
+                }
                 _ => {}
             },
         }
+        Ok(())
     }
 
     fn handle_action_key(&mut self, key: KeyEvent) {
@@ -589,67 +665,6 @@ impl JourneyApp {
             Some(ShortcutCommand::Action(action)) => self.execute_shortcut_action(action),
             _ => {}
         }
-    }
-
-    fn handle_workspace_key(&mut self, key: KeyEvent) -> Result<()> {
-        use workspace::Focus;
-
-        // Ctrl+H toggles focus between sidebar and terminal.
-        if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.workspace.toggle_focus();
-            return Ok(());
-        }
-
-        // Ctrl+Q always quits, even while a terminal has focus.
-        if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.should_quit = true;
-            return Ok(());
-        }
-
-        match self.workspace.focus {
-            Focus::Terminal => {
-                if let Some(terminal) = self.workspace.active_terminal() {
-                    terminal.write_key(&key);
-                }
-            }
-            Focus::Sidebar => match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if self.selected > 0 {
-                        self.selected -= 1;
-                        self.sync_workspace_selection();
-                    }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.selected + 1 < self.filtered.len() {
-                        self.selected += 1;
-                        self.sync_workspace_selection();
-                    }
-                }
-                KeyCode::Enter => {
-                    self.open_workspace_terminal()?;
-                }
-                KeyCode::Char('t') => {
-                    self.open_additional_tab()?;
-                }
-                KeyCode::Char('x') => {
-                    self.workspace.close_active_tab();
-                }
-                KeyCode::Char(']') => {
-                    self.workspace.next_tab();
-                }
-                KeyCode::Char('[') => {
-                    self.workspace.prev_tab();
-                }
-                KeyCode::Esc => {
-                    self.screen = Screen::List;
-                }
-                KeyCode::Char('d') if self.selected_entry().is_some() => {
-                    self.screen = Screen::Details;
-                }
-                _ => {}
-            },
-        }
-        Ok(())
     }
 
     fn sync_workspace_selection(&mut self) {
@@ -693,12 +708,11 @@ impl JourneyApp {
 
     fn terminal_area_size(&self) -> (u16, u16) {
         let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let sidebar_width: u16 = 30;
-        let border_overhead: u16 = 2;
-        let tab_bar: u16 = 1;
-        let cols = term_cols.saturating_sub(sidebar_width + border_overhead);
-        let rows = term_rows.saturating_sub(border_overhead + tab_bar);
-        (rows, cols)
+        // Right pane is 62% of terminal width, minus block borders (2 cols)
+        let right_pane_cols = (term_cols * 62 / 100).saturating_sub(2);
+        // header(3) + footer(1) + block borders(2) + tab bar(1) = 7
+        let rows = term_rows.saturating_sub(7);
+        (rows, right_pane_cols)
     }
 
     fn resize_active_terminals(&mut self) -> Result<()> {
@@ -1364,7 +1378,6 @@ enum Screen {
     Search,
     Details,
     Actions,
-    Workspace,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
