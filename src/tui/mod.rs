@@ -452,7 +452,16 @@ impl JourneyApp {
             Some(ShortcutCommand::CycleFilter) => self.cycle_filter(false),
             Some(ShortcutCommand::CycleFilterBack) => self.cycle_filter(true),
             Some(ShortcutCommand::Action(action)) => self.execute_shortcut_action(action),
-            _ => {}
+            _ => match key.code {
+                KeyCode::Char('a') => {
+                    if !self.filtered.is_empty() {
+                        self.screen = Screen::Actions;
+                        self.action_selected = 0;
+                        self.action_state.select(Some(0));
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
