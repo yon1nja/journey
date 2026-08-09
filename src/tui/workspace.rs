@@ -183,13 +183,33 @@ pub(super) fn render_workspace(
 ) {
     let area = frame.area();
 
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(30), Constraint::Min(1)])
-        .split(area);
+        .split(rows[0]);
 
     render_sidebar(frame, chunks[0], entries, filtered, selected, workspace);
     render_terminal_area(frame, chunks[1], workspace);
+    render_workspace_footer(frame, rows[1], workspace);
+}
+
+fn render_workspace_footer(frame: &mut Frame, area: Rect, workspace: &WorkspaceState) {
+    let help = match workspace.focus {
+        Focus::Sidebar => {
+            "↑↓ navigate  ↵ open  t new tab  x close  [] tabs  ^H focus  Esc back"
+        }
+        Focus::Terminal => "^H sidebar  ^Q quit",
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(help, super::render::dim())))
+            .block(Block::default().borders(Borders::TOP)),
+        area,
+    );
 }
 
 fn render_sidebar(

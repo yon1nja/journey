@@ -383,9 +383,12 @@ pub(super) fn render_footer(frame: &mut Frame<'_>, app: &JourneyApp, area: Rect)
             app.shortcuts.confirm_display(),
             app.shortcuts.back_display()
         ),
-        Screen::Workspace => {
-            "^H focus  j/k select  Enter open  t tab  x close  [ ] switch  Esc back".to_string()
-        }
+        Screen::Workspace => match app.workspace.focus {
+            workspace::Focus::Sidebar => {
+                "↑↓ navigate  ↵ open  t new tab  x close  [] tabs  ^H focus  Esc back".to_string()
+            }
+            workspace::Focus::Terminal => "^H sidebar  ^Q quit".to_string(),
+        },
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(help, dim())))
