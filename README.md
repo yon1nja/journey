@@ -1,10 +1,12 @@
 # Journey
 
-**Context persistence for engineering efforts.**
+**Durable memory for engineering work, operated by your agents.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Journey gives each engineering effort a durable folder on disk with metadata, a short description, linked git worktrees, effort-local docs, and lifecycle status. It is intentionally not a task manager, checkpoint system, agent orchestrator, or replacement for git — it preserves context around the work while leaving notes, plans, decisions, and version control to the tools you already use.
+Agent sessions are short-lived; engineering work is not. Journey gives each effort a durable folder on disk — what it is, why it exists, its linked git worktrees, its docs, and its lifecycle — so any agent, in any session, can pick the work up and continue it. You tell your agent "start a journey about X" or "open a journey for this and record everything"; the agent does the rest.
+
+Journey is not a task manager, a workspace, or a replacement for git. It provides the container and stays out of what goes inside.
 
 <p align="center">
   <img src="demo.gif" alt="Journey interactive TUI demo" width="800">
@@ -36,9 +38,15 @@ Journey gives each engineering effort a durable folder on disk with metadata, a 
 
 ## Philosophy
 
-Journey provides the smallest durable container for an engineering effort while staying deliberately unopinionated about the workflow inside it.
+- **Agents are the primary users.** The CLI is the interface, and every capability works non-interactively.
+- **Memory, not a workspace.** Your terminal, editor, and agent are the workspace. Journey holds the context.
+- **Self-explaining.** Agents learn what Journey is and when to use it from the tool itself.
+- **Unopinionated about what goes inside.** Each journey can be run its own way. Journey prescribes no document structure or workflow.
+- **One effort, one context.** Unrelated work stays out of an effort's context.
+- **Lifecycle matches the work.** Containers end when the work ends, and closing records an outcome.
+- **Git owns code.** Worktrees are referenced, never snapshotted or owned.
 
-Each Journey answers **what** the effort is, **why** it exists, **where** its worktrees and notes live, and what **lifecycle state** it is in. Beyond that, Journey stays extensible and quiet — it does not decide how you plan, document, delegate, summarize, or reason about the work.
+The full philosophy is in [docs/philosophy.md](docs/philosophy.md).
 
 ## Installation
 
