@@ -929,3 +929,38 @@ fn relate_unrelate_and_promote() {
     assert!(journal.contains("\"type\":\"unrelate\""));
     assert!(journal.contains("\"type\":\"promote\""));
 }
+
+#[test]
+fn skills_install_update_and_remove() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let dir = temp.path().join("skills");
+    let dir_arg = dir.to_str().unwrap();
+
+    let installed = journey(&home, &["skills", "install", "--dir", dir_arg]);
+    assert_eq!(installed.matches("installed: ").count(), 3);
+    let start = dir.join("journey-start/SKILL.md");
+    assert!(fs::read_to_string(&start)
+        .unwrap()
+        .starts_with("---\nname: journey-start\n"));
+
+    let again = journey(&home, &["skills", "install", "--dir", dir_arg]);
+    assert_eq!(again.matches("up to date: ").count(), 3);
+
+    fs::write(&start, "---\nname: journey-start\nold\n").unwrap();
+    let updated = journey(&home, &["skills", "install", "--dir", dir_arg]);
+    assert!(updated.contains("updated: "));
+
+    fs::create_dir_all(dir.join("other-skill")).unwrap();
+    fs::write(
+        dir.join("journey-resume/SKILL.md"),
+        "---\nname: my-own\n---\n",
+    )
+    .unwrap();
+    let removed = journey(&home, &["skills", "remove", "--dir", dir_arg]);
+    assert!(removed.contains("skipped (not a Journey skill)"));
+    assert!(!dir.join("journey-start").exists());
+    assert!(!dir.join("journey-side-quest").exists());
+    assert!(dir.join("journey-resume").exists());
+    assert!(dir.join("other-skill").exists());
+}

@@ -81,7 +81,15 @@ alias jy='journey'
 
 ### With an agent
 
-Journey is meant to be driven by your coding agent. Agents learn it from the tool itself:
+Journey is meant to be driven by your coding agent. Install the Journey skills once, globally:
+
+```sh
+journey skills install
+```
+
+This adds three skills to Claude Code (`~/.claude/skills/`): `journey-start`, `journey-side-quest`, and `journey-resume`. They let an agent recognize when to start, side-quest, or resume a journey without you explaining Journey first. Run it again after upgrading Journey to update them.
+
+The skills defer to the guide built into the CLI:
 
 ```sh
 journey guide
@@ -183,6 +191,15 @@ journey guide
 ```
 
 Prints the agent guide embedded in the binary.
+
+### `journey skills`
+
+```sh
+journey skills install [--dir <path>]
+journey skills remove [--dir <path>]
+```
+
+Installs, updates, or removes the Journey agent skills. The default folder is `$CLAUDE_CONFIG_DIR/skills`, or `~/.claude/skills`.
 
 ### `journey new`
 

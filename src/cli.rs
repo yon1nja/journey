@@ -105,6 +105,11 @@ pub enum Commands {
     },
     /// Turn a side-quest into a journey. Files and history stay as they are.
     Promote(ContextIdArgs),
+    /// Install or remove the Journey skills for your coding agents.
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommands,
+    },
     /// Create, link, or remove git worktrees for a Journey.
     Worktree {
         #[command(subcommand)]
@@ -121,6 +126,23 @@ pub struct CloseArgs {
     /// Also remove the linked worktrees from disk. Refuses if any has uncommitted changes.
     #[arg(long)]
     pub remove_worktrees: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillsCommands {
+    /// Install or update the Journey skills (journey-start, journey-side-quest,
+    /// journey-resume) globally for Claude Code.
+    Install {
+        /// Skills folder (defaults to $CLAUDE_CONFIG_DIR/skills or ~/.claude/skills).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Remove the Journey skills.
+    Remove {
+        /// Skills folder (defaults to $CLAUDE_CONFIG_DIR/skills or ~/.claude/skills).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

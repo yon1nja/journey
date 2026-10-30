@@ -105,6 +105,7 @@ The outcome is required. This marks it `done` and releases its worktrees (they s
 | `journey close [<id>] --outcome <text>` | Finish a journey with an outcome |
 | `journey pause` / `resume` / `archive` / `abandon` `[<id>]` | Other lifecycle changes |
 | `journey guide` | Print this guide |
+| `journey skills install` | Install or update the Journey skills for Claude Code |
 
 `new`, `list`, `status` and `doc list` accept `--json`, which includes each journey's folder path. Prefer it when you need to parse output.
 

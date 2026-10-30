@@ -9,7 +9,10 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::cli::{join_words, Cli, Commands, DocCommands, ReadmeCommands, WorktreeCommands};
+use crate::agent_skills;
+use crate::cli::{
+    join_words, Cli, Commands, DocCommands, ReadmeCommands, SkillsCommands, WorktreeCommands,
+};
 use crate::events;
 use crate::git;
 use crate::models::{EventKind, IndexEntry, JourneyKind, JourneyStatus, RepoRef};
@@ -93,6 +96,10 @@ pub fn run(cli: Cli) -> Result<String> {
             args.remove_worktrees,
         ),
         Some(Commands::Worktree { command }) => worktree_command(&home, &cwd, command),
+        Some(Commands::Skills { command }) => match command {
+            SkillsCommands::Install { dir } => agent_skills::install(dir.as_deref()),
+            SkillsCommands::Remove { dir } => agent_skills::remove(dir.as_deref()),
+        },
     }
 }
 

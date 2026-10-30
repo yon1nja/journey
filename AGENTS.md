@@ -83,6 +83,7 @@ Keep this behavior when adding commands that operate on an existing Journey.
 - `src/app/report.rs`: read-only views (`new`, `list`, `status`, `doc list`) as text or JSON.
 - `src/app/links.rs`: relations between Journeys, promotion, side-quest outcomes.
 - `src/guide.md`: the agent guide, embedded in the binary.
+- `src/agent_skills.rs` and `src/skills/`: agent skills embedded in the binary and installed by `journey skills install`. Keep them short; they defer to the guide.
 - `src/storage.rs`: files, indexes, context resolution, symlinks, atomic writes, shared agent guidance.
 - `src/models.rs`: serialized data structures.
 - `src/events.rs`: journal read/write and timestamps.

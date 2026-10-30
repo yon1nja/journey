@@ -1,3 +1,4 @@
+mod agent_skills;
 mod app;
 mod cli;
 mod events;
