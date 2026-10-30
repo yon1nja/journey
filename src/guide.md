@@ -14,6 +14,7 @@ The user directs; you do the work. Users rarely open journeys themselves. They t
 
 - **The user asks you to start a journey.** Create it, record the goal, then work and record as you go.
 - **The user asks you to open a journey mid-session.** Create it, then write down what this session already knows before it is lost to compaction or the session ending.
+- **Something small comes up along the way**, like a bug found while working on something else, and the user wants it handled on the side. Open a side-quest (see below) so the work doesn't pollute the current journey's context.
 - **The user asks you to continue some work.** Find the journey and resume it (see below).
 - **Work will clearly outlast this session and no journey exists for it.** Suggest starting one. Don't create journeys the user didn't ask for.
 
@@ -31,6 +32,19 @@ The output names the new journey's id and folder. Then:
 2. Record the context in the journey folder: what the effort is, what you know, where it stands. A `README.md` is the usual overview (`journey readme new` creates it). Other notes go in `docs/` (`journey doc new <name>`) or wherever the journey's conventions say.
 
 A good description says what the effort is and why it exists in a sentence or two. It is not a status log.
+
+## Side-quests
+
+A side-quest is a small, short-lived kind of journey for work that pops up in the middle of other work. It has its own context, and its docs live and die with it. It can be related to a journey or stand alone. It never lives inside another journey's folder.
+
+```sh
+journey new "<title>" --side-quest --linked-to <journey-id> --description "<what and why>"
+```
+
+- **Copy in only what's relevant.** When you start a side-quest from a journey, read that journey and copy into the side-quest the context this side-quest needs, such as the relevant findings, constraints or file locations. Don't copy everything, and don't leave only a bare pointer.
+- **Keep the work out of the parent.** Don't write the side-quest's work into the linked journey. If it touches code, give it its own branch and worktree (`journey worktree new --branch <name> --journey <side-quest-id>`), not the parent's.
+- **Close it with an outcome.** `journey close <id> --outcome "<result>"`. The outcome line is also added under `## Side-quests` in the README of every journey it is related to, so the parent learns the result without absorbing the work.
+- **Promote it if it grows.** `journey promote <id>` turns it into a regular journey. Nothing moves.
 
 ## Recording
 
@@ -61,7 +75,7 @@ When the effort is finished, close it with a one-line outcome:
 journey close <id> --outcome "<how it ended>"
 ```
 
-This marks it `done` and releases its worktrees (they stay on disk unless you pass `--remove-worktrees`). Other lifecycle commands: `journey pause`, `journey resume`, `journey archive` (shelved), `journey abandon` (stopped).
+The outcome is required. This marks it `done` and releases its worktrees (they stay on disk unless you pass `--remove-worktrees`). Other lifecycle commands: `journey pause`, `journey resume`, `journey archive` (shelved), `journey abandon` (stopped).
 
 ## Rules
 
@@ -76,6 +90,9 @@ This marks it `done` and releases its worktrees (they stay on disk unless you pa
 | Command | What it does |
 |---|---|
 | `journey new <title> [--description <text>]` | Create a journey |
+| `journey new <title> --side-quest [--linked-to <id>]` | Create a side-quest, optionally related to a journey |
+| `journey relate <id>` / `journey unrelate <id>` | Relate this journey to another one, or remove the relation |
+| `journey promote [<id>]` | Turn a side-quest into a journey |
 | `journey list [--status <s> \| --all] [--search <text>]` | List journeys (default: active) or search them |
 | `journey status [<id>]` | Show a journey's summary |
 | `journey link <path> [--name <name>]` | Link an existing repo or worktree |

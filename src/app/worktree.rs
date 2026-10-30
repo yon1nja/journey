@@ -282,7 +282,17 @@ mod tests {
         git_command(&repo, &["branch", "feature"]);
         git::create_worktree(&repo, &worktree, "feature", false, None).unwrap();
 
-        report::new_journey(&home, "Delete Worktree", None, false).unwrap();
+        report::new_journey(
+            &home,
+            storage::NewJourney {
+                title: "Delete Worktree",
+                description: None,
+                kind: Default::default(),
+                links: Vec::new(),
+            },
+            false,
+        )
+        .unwrap();
         link_repo(
             &home,
             &repo,

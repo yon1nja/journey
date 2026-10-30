@@ -17,7 +17,7 @@ pub struct Cli {
 pub enum Commands {
     /// Print the agent guide: what Journey is, when to use it, and how.
     Guide,
-    /// Create a new Journey.
+    /// Create a new Journey, or a side-quest with --side-quest.
     New(NewArgs),
     /// Append a quick capture to a Journey-local Markdown doc.
     Capture(CaptureArgs),
@@ -37,7 +37,7 @@ pub enum Commands {
     },
     /// Mark a Journey active.
     Resume(ContextIdArgs),
-    /// List Journeys as tab-separated rows: id, status, updated, repos.
+    /// List Journeys as tab-separated rows: id, status, updated, repos, kind.
     List {
         /// Only list Journeys with this status (defaults to active).
         #[arg(long, conflicts_with = "all")]
@@ -88,8 +88,23 @@ pub enum Commands {
     /// Close a finished Journey with an outcome and mark it done.
     ///
     /// Releases worktree ownership. The worktrees stay on disk unless
-    /// --remove-worktrees is passed.
+    /// --remove-worktrees is passed. A side-quest's outcome is also added to
+    /// the README of every Journey it is related to.
     Close(CloseArgs),
+    /// Relate this Journey to another one by id.
+    Relate {
+        other: String,
+        #[arg(long)]
+        journey: Option<String>,
+    },
+    /// Remove a relation to another Journey.
+    Unrelate {
+        other: String,
+        #[arg(long)]
+        journey: Option<String>,
+    },
+    /// Turn a side-quest into a journey. Files and history stay as they are.
+    Promote(ContextIdArgs),
     /// Create, link, or remove git worktrees for a Journey.
     Worktree {
         #[command(subcommand)]
@@ -149,6 +164,13 @@ pub struct NewArgs {
     pub text: Vec<String>,
     #[arg(short, long)]
     pub description: Option<String>,
+    /// Create a side-quest: a small, short-lived Journey for work that came up
+    /// along the way. Usually combined with --linked-to.
+    #[arg(long)]
+    pub side_quest: bool,
+    /// Relate the new Journey to an existing one by id. Repeatable.
+    #[arg(long = "linked-to", value_name = "ID")]
+    pub linked_to: Vec<String>,
     /// Print the new Journey as JSON.
     #[arg(long)]
     pub json: bool,

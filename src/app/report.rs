@@ -13,9 +13,11 @@ struct JourneySummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     status: JourneyStatus,
+    kind: JourneyKind,
     updated: String,
     path: PathBuf,
     repos: Vec<String>,
+    links: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -25,8 +27,12 @@ struct JourneyDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     status: JourneyStatus,
+    kind: JourneyKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<String>,
+    links: Vec<String>,
+    /// Journeys that link to this one, such as its side-quests.
+    linked_from: Vec<String>,
     created: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     updated: Option<String>,
@@ -50,19 +56,18 @@ pub(crate) struct ListFilter<'a> {
     pub search: Option<&'a str>,
 }
 
-pub(crate) fn new_journey(
-    home: &Path,
-    title: &str,
-    description: Option<String>,
-    json: bool,
-) -> Result<String> {
+pub(crate) fn new_journey(home: &Path, new: storage::NewJourney<'_>, json: bool) -> Result<String> {
     let now = events::now_rfc3339()?;
-    let ctx = storage::create_journey(home, title, clean_optional(description), &now)?;
+    let ctx = storage::create_journey(home, new, &now)?;
     if json {
         return to_json(&detail(&ctx)?);
     }
+    let kind = match ctx.journey.kind {
+        JourneyKind::Journey => "Journey",
+        JourneyKind::SideQuest => "side-quest",
+    };
     Ok(format!(
-        "created Journey `{}` at {}",
+        "created {kind} `{}` at {}",
         ctx.journey.id,
         ctx.path.display()
     ))
@@ -93,8 +98,10 @@ pub(crate) fn list_journeys(home: &Path, filter: &ListFilter<'_>, json: bool) ->
                 title: entry.title,
                 description: entry.description,
                 status: entry.status,
+                kind: entry.kind,
                 updated: entry.updated,
                 repos: entry.repos,
+                links: entry.links,
             })
             .collect::<Vec<_>>();
         return to_json(&rows);
@@ -132,8 +139,8 @@ fn render_journey_table(rows: &[IndexEntry]) -> String {
             entry.repos.join(", ")
         };
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\n",
-            entry.id, entry.status, entry.updated, repos
+            "{}\t{}\t{}\t{}\t{}\n",
+            entry.id, entry.status, entry.updated, repos, entry.kind
         ));
     }
     out.trim_end().to_string()
@@ -152,9 +159,19 @@ pub(crate) fn status(home: &Path, cwd: &Path, id: Option<&str>, json: bool) -> R
         out.push_str(&format!("description: {description}\n"));
     }
     out.push_str(&format!("id: {}\n", detail.id));
+    out.push_str(&format!("kind: {}\n", detail.kind));
     out.push_str(&format!("status: {}\n", detail.status));
     if let Some(outcome) = &detail.outcome {
         out.push_str(&format!("outcome: {outcome}\n"));
+    }
+    if !detail.links.is_empty() {
+        out.push_str(&format!("related to: {}\n", detail.links.join(", ")));
+    }
+    if !detail.linked_from.is_empty() {
+        out.push_str(&format!(
+            "related from: {}\n",
+            detail.linked_from.join(", ")
+        ));
     }
     out.push_str(&format!("path: {}\n", detail.path.display()));
     match &detail.readme {
@@ -179,11 +196,18 @@ pub(crate) fn status(home: &Path, cwd: &Path, id: Option<&str>, json: bool) -> R
 }
 
 fn detail(ctx: &JourneyContext) -> Result<JourneyDetail> {
-    let updated = storage::load_index(&ctx.home)?
+    let index = storage::load_index(&ctx.home)?;
+    let updated = index
         .journeys
-        .into_iter()
+        .iter()
         .find(|entry| entry.id == ctx.journey.id)
-        .map(|entry| entry.updated);
+        .map(|entry| entry.updated.clone());
+    let linked_from = index
+        .journeys
+        .iter()
+        .filter(|entry| entry.links.contains(&ctx.journey.id))
+        .map(|entry| entry.id.clone())
+        .collect();
     let readme = ctx.path.join(storage::README_FILE);
     let journey = ctx.journey.clone();
     Ok(JourneyDetail {
@@ -191,7 +215,10 @@ fn detail(ctx: &JourneyContext) -> Result<JourneyDetail> {
         title: journey.title,
         description: journey.description,
         status: journey.status,
+        kind: journey.kind,
         outcome: journey.outcome,
+        links: journey.links,
+        linked_from,
         created: journey.created,
         updated,
         path: ctx.path.clone(),

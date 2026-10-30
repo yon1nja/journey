@@ -21,6 +21,7 @@ In short:
 - Anything users or agents write inside a journey, including status notes, task files and handoff docs, is legitimate content. Journey neither manages nor forbids it.
 - Journey does not track tasks and has no structured narrative commands (`ask`, `decide`, `next`, and so on).
 - Worktrees are referenced, not owned. The `worktrees/` directory contains symlinks as a convenience view only.
+- Side-quests are a kind of Journey in the same store. They are never nested inside another journey. The only time Journey writes into a journey's content is appending a closed side-quest's outcome under `## Side-quests` in a related journey's README.
 - A canonical worktree path can be attached to only one active or paused Journey at a time.
 - Journeys that are no longer open release worktree ownership. Active and paused Journeys may own worktrees.
 - Lifecycle commands do not modify code state.
@@ -49,10 +50,10 @@ Default state root is `~/.journey`; tests and agents can set `JOURNEY_HOME`.
 
 Key files:
 
-- `journey.yaml`: id, title, optional description, status, created timestamp, linked repos.
+- `journey.yaml`: id, title, optional description, kind (`side-quest` when not a plain journey), status, created timestamp, outcome once done, links to other Journeys by id, linked repos.
 - `index.yaml`: global registry used by list and discovery.
 - `worktree-index.yaml`: canonical worktree path to owning Journey id and repo name.
-- `journal.jsonl`: operational events only (`link_repo`, `unlink_repo`, `status_change`).
+- `journal.jsonl`: operational events only (`link_repo`, `unlink_repo`, `status_change`, `close`, `relate`, `unrelate`, `promote`).
 - `JOURNEY-AGENTS.md`: shared agent guidance, owned by Journey.
 - `AGENTS.md`: per-journey pointer to the shared guidance; user-owned after creation.
 - `CLAUDE.md`: reference to `AGENTS.md`.
@@ -78,7 +79,10 @@ Keep this behavior when adding commands that operate on an existing Journey.
 
 - `src/cli.rs`: clap command definitions.
 - `src/app/mod.rs`: command dispatch and core command behavior.
-- `src/app/worktree.rs`: linking, unlinking and removing worktrees.
+- `src/app/worktree.rs`: creating, linking, unlinking and removing worktrees.
+- `src/app/report.rs`: read-only views (`new`, `list`, `status`, `doc list`) as text or JSON.
+- `src/app/links.rs`: relations between Journeys, promotion, side-quest outcomes.
+- `src/guide.md`: the agent guide, embedded in the binary.
 - `src/storage.rs`: files, indexes, context resolution, symlinks, atomic writes, shared agent guidance.
 - `src/models.rs`: serialized data structures.
 - `src/events.rs`: journal read/write and timestamps.

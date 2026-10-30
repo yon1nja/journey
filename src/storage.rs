@@ -7,7 +7,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use tempfile::NamedTempFile;
 
 use crate::models::{
-    Index, IndexEntry, JourneyFile, JourneyStatus, RepoRef, WorktreeAttachment, WorktreeIndex,
+    Index, IndexEntry, JourneyFile, JourneyKind, JourneyStatus, RepoRef, WorktreeAttachment,
+    WorktreeIndex,
 };
 
 pub const INDEX_FILE: &str = "index.yaml";
@@ -142,15 +143,23 @@ pub fn resolve_context(
     bail!("not inside a Journey folder or attached worktree; pass an explicit Journey id");
 }
 
-pub fn create_journey(
-    home: &Path,
-    title: &str,
-    description: Option<String>,
-    now: &str,
-) -> Result<JourneyContext> {
+pub struct NewJourney<'a> {
+    pub title: &'a str,
+    pub description: Option<String>,
+    pub kind: JourneyKind,
+    pub links: Vec<String>,
+}
+
+pub fn create_journey(home: &Path, new: NewJourney<'_>, now: &str) -> Result<JourneyContext> {
     ensure_home(home)?;
+    let title = new.title;
 
     let mut index = load_index(home)?;
+    for link in &new.links {
+        if !index.journeys.iter().any(|entry| &entry.id == link) {
+            bail!("unknown Journey id: {link}");
+        }
+    }
     let id = allocate_id(&index, title);
     let path = journey_dir(home, &id);
     fs::create_dir_all(&path)
@@ -159,10 +168,12 @@ pub fn create_journey(
     let journey = JourneyFile {
         id: id.clone(),
         title: title.to_string(),
-        description: description.clone(),
+        description: new.description,
+        kind: new.kind,
         status: JourneyStatus::Active,
         created: now.to_string(),
         outcome: None,
+        links: new.links,
         repos: Vec::new(),
     };
 
@@ -177,14 +188,7 @@ pub fn create_journey(
     write_string_atomic(&path.join(CLAUDE_MD_FILE), CLAUDE_MD_TEMPLATE)
         .with_context(|| format!("failed to create {}", path.join(CLAUDE_MD_FILE).display()))?;
 
-    index.journeys.push(IndexEntry {
-        id,
-        title: title.to_string(),
-        description,
-        status: JourneyStatus::Active,
-        updated: now.to_string(),
-        repos: Vec::new(),
-    });
+    index.journeys.push(index_entry(&journey, now));
     index.journeys.sort_by(|a, b| a.id.cmp(&b.id));
     save_index(home, &index)?;
 
@@ -202,28 +206,25 @@ fn agents_template(home: &Path) -> String {
     )
 }
 
+fn index_entry(journey: &JourneyFile, now: &str) -> IndexEntry {
+    IndexEntry {
+        id: journey.id.clone(),
+        title: journey.title.clone(),
+        description: journey.description.clone(),
+        status: journey.status,
+        kind: journey.kind,
+        updated: now.to_string(),
+        repos: journey.repos.iter().map(|repo| repo.name.clone()).collect(),
+        links: journey.links.clone(),
+    }
+}
+
 pub fn update_index_entry(home: &Path, journey: &JourneyFile, now: &str) -> Result<()> {
     let mut index = load_index(home)?;
-    let repos: Vec<String> = journey.repos.iter().map(|repo| repo.name.clone()).collect();
-    if let Some(entry) = index
-        .journeys
-        .iter_mut()
-        .find(|entry| entry.id == journey.id)
-    {
-        entry.title = journey.title.clone();
-        entry.description = journey.description.clone();
-        entry.status = journey.status;
-        entry.updated = now.to_string();
-        entry.repos = repos;
-    } else {
-        index.journeys.push(IndexEntry {
-            id: journey.id.clone(),
-            title: journey.title.clone(),
-            description: journey.description.clone(),
-            status: journey.status,
-            updated: now.to_string(),
-            repos,
-        });
+    let entry = index_entry(journey, now);
+    match index.journeys.iter_mut().find(|item| item.id == journey.id) {
+        Some(existing) => *existing = entry,
+        None => index.journeys.push(entry),
     }
     index.journeys.sort_by(|a, b| a.id.cmp(&b.id));
     save_index(home, &index)

@@ -51,6 +51,30 @@ impl FromStr for JourneyStatus {
     }
 }
 
+/// A side-quest is a short-lived kind of Journey. Promoting one only changes its kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JourneyKind {
+    #[default]
+    Journey,
+    SideQuest,
+}
+
+impl JourneyKind {
+    pub fn is_journey(&self) -> bool {
+        *self == JourneyKind::Journey
+    }
+}
+
+impl fmt::Display for JourneyKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            JourneyKind::Journey => "journey",
+            JourneyKind::SideQuest => "side-quest",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Index {
     #[serde(default)]
@@ -64,9 +88,13 @@ pub struct IndexEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub status: JourneyStatus,
+    #[serde(default, skip_serializing_if = "JourneyKind::is_journey")]
+    pub kind: JourneyKind,
     pub updated: String,
     #[serde(default)]
     pub repos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -89,10 +117,15 @@ pub struct JourneyFile {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "JourneyKind::is_journey")]
+    pub kind: JourneyKind,
     pub status: JourneyStatus,
     pub created: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// Ids of related Journeys. Links are stored by id, never by path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
     #[serde(default)]
     pub repos: Vec<RepoRef>,
 }
@@ -135,6 +168,13 @@ pub enum EventKind {
     Close {
         outcome: String,
     },
+    Relate {
+        journey: String,
+    },
+    Unrelate {
+        journey: String,
+    },
+    Promote,
     #[serde(other)]
     Legacy,
 }

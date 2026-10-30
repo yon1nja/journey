@@ -115,11 +115,15 @@ journey resume
 
 A **Journey** represents one engineering effort — an investigation, migration, review, or feature. It can span multiple repositories and multiple live git worktrees.
 
+A **side-quest** is a small, short-lived kind of Journey for work that pops up in the middle of other work, like a bug found along the way. It has its own context so it doesn't pollute the journey it came from. It can be related to a journey or stand alone, and it is never nested inside one. Closing it requires an outcome, which is also added under `## Side-quests` in the README of each related journey. A side-quest that grows can be promoted to a journey; nothing moves on disk.
+
+Journeys relate to each other by id (`journey relate`), never by folder structure.
+
 Each Journey stores:
 
 | File / Directory | Purpose |
 |---|---|
-| `journey.yaml` | ID, title, description, status, creation time, linked repos |
+| `journey.yaml` | ID, title, description, kind, status, outcome, creation time, related Journeys, linked repos |
 | `journal.jsonl` | Append-only operational log (link, unlink, status changes) |
 | `AGENTS.md` | Pointer to shared Journey agent guidance |
 | `CLAUDE.md` | Claude-specific pointer to `AGENTS.md` |
@@ -183,7 +187,7 @@ Prints the agent guide embedded in the binary.
 ### `journey new`
 
 ```sh
-journey new <title> [--description <text>]
+journey new <title> [--description <text>] [--side-quest] [--linked-to <id>]... [--json]
 ```
 
 Creates a Journey with `journey.yaml`, `journal.jsonl`, `AGENTS.md`, and `CLAUDE.md`.
@@ -194,7 +198,7 @@ Creates a Journey with `journey.yaml`, `journal.jsonl`, `AGENTS.md`, and `CLAUDE
 journey list [--status active|paused|done|archived|abandoned | --all] [--search <text>] [--json]
 ```
 
-Lists Journeys with the given status (default: active) as tab-separated rows: `<id> <status> <updated> <repos>`. `--search` matches id, title, description, and repo names, case-insensitively, across every status unless `--status` is given.
+Lists Journeys with the given status (default: active) as tab-separated rows: `<id> <status> <updated> <repos> <kind>`. `--search` matches id, title, description, and repo names, case-insensitively, across every status unless `--status` is given.
 
 ### `journey status`
 
@@ -226,13 +230,23 @@ journey archive [<id>]
 journey abandon [<id>]
 ```
 
+### `journey relate` / `journey unrelate` / `journey promote`
+
+```sh
+journey relate <id> [--journey <id>]
+journey unrelate <id> [--journey <id>]
+journey promote [<id>]
+```
+
+Relate the current Journey to another one, remove a relation, or turn a side-quest into a journey.
+
 ### `journey close`
 
 ```sh
 journey close [<id>] --outcome <text> [--remove-worktrees]
 ```
 
-Marks a Journey `done` and records a one-line outcome in `journey.yaml` and the journal. The outcome is required. Worktree ownership is released; `--remove-worktrees` also removes the linked worktrees from disk.
+Marks a Journey `done` and records a one-line outcome in `journey.yaml` and the journal. The outcome is required. For a side-quest, the outcome is also added under `## Side-quests` in the README of each related journey. Worktree ownership is released; `--remove-worktrees` also removes the linked worktrees from disk.
 
 ### `journey worktree`
 

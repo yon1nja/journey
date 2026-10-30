@@ -809,3 +809,123 @@ fn list_search_finds_journeys_across_statuses() {
     assert!(all.contains("billing-export"));
     assert!(all.contains("old-auth-work"));
 }
+
+#[test]
+fn side_quest_closes_with_outcome_in_linked_readme() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Memory", "Work"]);
+    journey(&home, &["readme", "new", "--journey", "memory-work"]);
+
+    let created = journey(
+        &home,
+        &[
+            "new",
+            "Fix",
+            "Leak",
+            "--side-quest",
+            "--linked-to",
+            "memory-work",
+        ],
+    );
+    assert!(created.contains("created side-quest `fix-leak`"));
+    assert!(!home.join("journeys/memory-work/fix-leak").exists());
+    let side_quest_yaml = fs::read_to_string(home.join("journeys/fix-leak/journey.yaml")).unwrap();
+    assert!(side_quest_yaml.contains("kind: side-quest"));
+    assert!(side_quest_yaml.contains("- memory-work"));
+
+    let listed = journey(&home, &["list"]);
+    assert!(listed.contains("fix-leak\tactive\t"));
+    assert!(listed.contains("\tside-quest"));
+
+    let parent: serde_json::Value =
+        serde_json::from_str(&journey(&home, &["status", "memory-work", "--json"])).unwrap();
+    assert_eq!(parent["kind"], "journey");
+    assert_eq!(parent["linked_from"][0], "fix-leak");
+
+    let closed = journey(
+        &home,
+        &[
+            "close",
+            "fix-leak",
+            "--outcome",
+            "Dropped the stale listener",
+        ],
+    );
+    assert!(closed.contains("recorded outcome in the README of Journey `memory-work`"));
+
+    let readme = fs::read_to_string(home.join("journeys/memory-work/README.md")).unwrap();
+    assert!(readme.starts_with("# Memory Work\n"));
+    assert!(readme.contains("## Side-quests\n\n- `fix-leak` ("));
+    assert!(readme.contains("): Dropped the stale listener\n"));
+
+    let error = journey_fails(
+        &home,
+        &["new", "Orphan", "--side-quest", "--linked-to", "missing"],
+    );
+    assert!(error.contains("unknown Journey id: missing"));
+}
+
+#[test]
+fn side_quest_without_link_and_with_missing_readme() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Parent"]);
+    journey(&home, &["new", "Loose", "Quest", "--side-quest"]);
+    let closed = journey(
+        &home,
+        &["close", "loose-quest", "--outcome", "Nothing to fix"],
+    );
+    assert!(!closed.contains("recorded outcome"));
+
+    journey(&home, &["new", "Linked", "Quest", "--side-quest"]);
+    journey(&home, &["relate", "parent", "--journey", "linked-quest"]);
+    journey(&home, &["close", "linked-quest", "--outcome", "Fixed"]);
+    let readme = fs::read_to_string(home.join("journeys/parent/README.md")).unwrap();
+    assert!(readme.starts_with("# Parent\n\n## Side-quests\n\n- `linked-quest` ("));
+}
+
+#[test]
+fn relate_unrelate_and_promote() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Main", "Effort"]);
+    journey(&home, &["new", "Quick", "Check", "--side-quest"]);
+    let quest_dir = home.join("journeys/quick-check");
+
+    let related = journey_in(&home, Some(&quest_dir), &["relate", "main-effort"]);
+    assert!(related.contains("related Journey `quick-check` to `main-effort`"));
+    let error = journey_fails(
+        &home,
+        &["relate", "main-effort", "--journey", "quick-check"],
+    );
+    assert!(error.contains("already related"));
+    let error = journey_fails(
+        &home,
+        &["relate", "quick-check", "--journey", "quick-check"],
+    );
+    assert!(error.contains("cannot be related to itself"));
+
+    let status = journey(&home, &["status", "quick-check"]);
+    assert!(status.contains("kind: side-quest"));
+    assert!(status.contains("related to: main-effort"));
+
+    let unrelated = journey(
+        &home,
+        &["unrelate", "main-effort", "--journey", "quick-check"],
+    );
+    assert!(unrelated.contains("unrelated"));
+    assert!(!journey(&home, &["status", "quick-check"]).contains("related to"));
+
+    let promoted = journey(&home, &["promote", "quick-check"]);
+    assert!(promoted.contains("promoted side-quest `quick-check` to a journey"));
+    assert!(quest_dir.join("journey.yaml").exists());
+    assert!(journey(&home, &["status", "quick-check"]).contains("kind: journey"));
+    let error = journey_fails(&home, &["promote", "quick-check"]);
+    assert!(error.contains("is not a side-quest"));
+
+    let journal = fs::read_to_string(quest_dir.join("journal.jsonl")).unwrap();
+    assert!(journal.contains("\"type\":\"relate\""));
+    assert!(journal.contains("\"type\":\"unrelate\""));
+    assert!(journal.contains("\"type\":\"promote\""));
+}

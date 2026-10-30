@@ -1,3 +1,4 @@
+mod links;
 mod report;
 mod worktree;
 
@@ -11,8 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use crate::cli::{join_words, Cli, Commands, DocCommands, ReadmeCommands, WorktreeCommands};
 use crate::events;
 use crate::git;
-use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
-
+use crate::models::{EventKind, IndexEntry, JourneyKind, JourneyStatus, RepoRef};
 use crate::storage::{self, JourneyContext};
 use report::ListFilter;
 
@@ -23,9 +23,27 @@ pub fn run(cli: Cli) -> Result<String> {
     match cli.command {
         None => overview(&home),
         Some(Commands::Guide) => Ok(storage::GUIDE.trim_end().to_string()),
-        Some(Commands::New(args)) => {
-            report::new_journey(&home, &join_words(&args.text), args.description, args.json)
+        Some(Commands::New(args)) => report::new_journey(
+            &home,
+            storage::NewJourney {
+                title: &join_words(&args.text),
+                description: clean_optional(args.description),
+                kind: if args.side_quest {
+                    JourneyKind::SideQuest
+                } else {
+                    JourneyKind::Journey
+                },
+                links: args.linked_to,
+            },
+            args.json,
+        ),
+        Some(Commands::Relate { other, journey }) => {
+            links::relate(&home, &cwd, journey.as_deref(), &other)
         }
+        Some(Commands::Unrelate { other, journey }) => {
+            links::unrelate(&home, &cwd, journey.as_deref(), &other)
+        }
+        Some(Commands::Promote(args)) => links::promote(&home, &cwd, args.id.as_deref()),
         Some(Commands::Capture(args)) => {
             let text = read_capture_input(&args.text)?;
             capture(&home, &cwd, args.journey.as_deref(), &args.doc, &text)
@@ -194,19 +212,28 @@ pub(crate) fn close(
             outcome: outcome.to_string(),
         },
     )?;
-    finish_mutation(&ctx, Some(record.ts))?;
+    finish_mutation(&ctx, Some(record.ts.clone()))?;
 
-    if remove_worktrees {
-        Ok(format!(
+    let mut message = if remove_worktrees {
+        format!(
             "Journey `{}` is done (removed {removed} worktrees)",
             ctx.journey.id
-        ))
+        )
     } else {
-        Ok(format!(
+        format!(
             "Journey `{}` is done (detached {detached} worktrees)",
             ctx.journey.id
-        ))
+        )
+    };
+    if ctx.journey.kind == JourneyKind::SideQuest {
+        let updated = links::record_side_quest_outcome(home, &ctx, outcome, &record.ts)?;
+        for id in updated {
+            message.push_str(&format!(
+                "\nrecorded outcome in the README of Journey `{id}`"
+            ));
+        }
     }
+    Ok(message)
 }
 
 fn worktree_command(home: &Path, cwd: &Path, command: WorktreeCommands) -> Result<String> {
