@@ -127,7 +127,7 @@ pub(crate) fn create_worktree(
 
     let path =
         requested_path.unwrap_or_else(|| main.join(".worktrees").join(storage::slugify(branch)));
-    git::create_worktree_from(&main, &path, branch, !existing_branch, request.from)?;
+    git::create_worktree(&main, &path, branch, !existing_branch, request.from)?;
     let name = match &request.name {
         Some(name) => name.clone(),
         None => path
@@ -280,7 +280,7 @@ mod tests {
         let worktree = temp.path().join("feature-worktree");
         init_repo(&repo);
         git_command(&repo, &["branch", "feature"]);
-        git::create_worktree(&repo, &worktree, "feature", false).unwrap();
+        git::create_worktree(&repo, &worktree, "feature", false, None).unwrap();
 
         new_journey(&home, "Delete Worktree", None).unwrap();
         link_repo(
@@ -308,60 +308,5 @@ mod tests {
         )
         .unwrap();
         assert!(journal.contains("\"type\":\"unlink_repo\""));
-    }
-
-    #[test]
-    fn done_archives_and_removes_worktrees_while_keeping_context() {
-        let temp = TempDir::new().unwrap();
-        let home = temp.path().join("journey-home");
-        let repo = temp.path().join("repo");
-        let first = temp.path().join("first-worktree");
-        let second = temp.path().join("second-worktree");
-        init_repo(&repo);
-        git_command(&repo, &["branch", "first"]);
-        git_command(&repo, &["branch", "second"]);
-        git::create_worktree(&repo, &first, "first", false).unwrap();
-        git::create_worktree(&repo, &second, "second", false).unwrap();
-
-        new_journey(&home, "Done Journey", None).unwrap();
-        link_repo(
-            &home,
-            &repo,
-            Some("done-journey"),
-            &first,
-            Some("first".to_string()),
-        )
-        .unwrap();
-        link_repo(
-            &home,
-            &repo,
-            Some("done-journey"),
-            &second,
-            Some("second".to_string()),
-        )
-        .unwrap();
-
-        let result = done(&home, &repo, Some("done-journey")).unwrap();
-
-        assert!(result.contains("archived and removed 2 worktrees"));
-        assert!(!first.exists());
-        assert!(!second.exists());
-        let journey_dir = storage::journey_dir(&home, "done-journey");
-        let journey = storage::load_journey(&journey_dir).unwrap();
-        assert_eq!(journey.status, JourneyStatus::Archived);
-        assert_eq!(journey.repos.len(), 2);
-        assert!(journey_dir.join(storage::JOURNAL_FILE).exists());
-        assert!(storage::load_worktree_index(&home)
-            .unwrap()
-            .attachments
-            .is_empty());
-        assert!(!journey_dir
-            .join(storage::WORKTREES_DIR)
-            .join("first")
-            .exists());
-        assert!(!journey_dir
-            .join(storage::WORKTREES_DIR)
-            .join("second")
-            .exists());
     }
 }

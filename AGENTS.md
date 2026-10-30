@@ -83,8 +83,6 @@ Keep this behavior when adding commands that operate on an existing Journey.
 - `src/models.rs`: serialized data structures.
 - `src/events.rs`: journal read/write and timestamps.
 - `src/git.rs`: git CLI wrapper and worktree creation.
-- `src/tui/`: interactive terminal app (being removed in v0.3.0).
-- `src/config/`: TUI action ordering and shortcuts (being removed in v0.3.0).
 - `tests/cli_flow.rs`: end-to-end CLI behavior.
 
 ## Development Notes

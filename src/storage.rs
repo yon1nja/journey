@@ -6,7 +6,6 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use tempfile::NamedTempFile;
 
-use crate::config;
 use crate::models::{
     Index, IndexEntry, JourneyFile, JourneyStatus, RepoRef, WorktreeAttachment, WorktreeIndex,
 };
@@ -33,7 +32,7 @@ You are working inside a Journey — a local context container for an engineerin
 
 - **Config**: `journey.yaml` in this directory — contains id, title, description, status, and linked repos.
 - **Journal**: `journal.jsonl` — append-only operational event log (link/unlink/status changes).
-- **README**: `README.md` — optional user-owned top-level overview shown in Journey's interactive Details pane when present.
+- **README**: `README.md` — optional user-owned top-level overview of the Journey.
 - **Docs**: `docs/` — user-owned Markdown files. You may create new docs here but never overwrite existing ones.
 - **Worktrees**: `worktrees/` — symlinks to attached git worktrees (convenience view, not ownership).
 
@@ -52,7 +51,7 @@ The `journey` CLI manages this folder. Key commands:
 - `journey doc new <name>` — create a new doc under `docs/`.
 - `journey doc list` — list existing docs.
 - `journey pause` / `journey resume` — lifecycle transitions.
-- `journey list --non-interactive` — list all Journeys (for scripts/agents).
+- `journey list` — list active Journeys (`--status` for others).
 
 ## Working with Config Files
 
@@ -99,9 +98,6 @@ pub fn ensure_home(home: &Path) -> Result<()> {
         .with_context(|| format!("failed to create {}", home.join(JOURNEYS_DIR).display()))?;
     if !home.join(JOURNEY_AGENTS_FILE).exists() {
         write_string_atomic(&home.join(JOURNEY_AGENTS_FILE), JOURNEY_AGENTS_TEMPLATE)?;
-    }
-    if !home.join(config::CONFIG_FILE).exists() {
-        write_string_atomic(&home.join(config::CONFIG_FILE), config::DEFAULT_CONFIG_TOML)?;
     }
     if !home.join(INDEX_FILE).exists() {
         write_yaml_atomic(&home.join(INDEX_FILE), &Index::default())?;
@@ -666,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_home_creates_default_config() {
+    fn ensure_home_creates_shared_guidance() {
         let temp = tempfile::TempDir::new().unwrap();
         let home = temp.path().join("journey-home");
 
@@ -675,10 +671,6 @@ mod tests {
         let agents = fs::read_to_string(home.join(JOURNEY_AGENTS_FILE)).unwrap();
         assert!(agents.contains("# JOURNEY-AGENTS.md"));
         assert!(agents.contains("journey capture <text>"));
-
-        let config = fs::read_to_string(home.join(config::CONFIG_FILE)).unwrap();
-        assert!(config.contains("[shortcuts]"));
-        assert!(config.contains("open_claude = \"c\""));
-        assert!(config.contains("quit = \"q\""));
+        assert!(!home.join("config.toml").exists());
     }
 }

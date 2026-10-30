@@ -130,7 +130,7 @@ fn full_cli_flow_links_docs_and_worktrees_without_generated_state() {
     assert!(journey_agents.contains("README.md"));
     assert!(journey_agents.contains("journey readme new"));
     assert!(journey_agents.contains("journey capture <text>"));
-    assert!(journey_agents.contains("interactive Details pane"));
+    assert!(!journey_agents.contains("interactive"));
 
     let doc_path = journey(
         &home,
@@ -209,13 +209,32 @@ fn list_non_interactive_keeps_table_output() {
 }
 
 #[test]
-fn bare_journey_shows_non_interactive_list_when_piped() {
+fn bare_journey_prints_overview_and_active_list() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
     journey(&home, &["new", "Piped", "Test"]);
 
     let output = journey(&home, &[]);
-    assert!(output.contains("piped-test"));
+    assert!(output.contains("journey --help"));
+    assert!(output.contains("piped-test\tactive\t"));
+    assert!(!home.join("config.toml").exists());
+}
+
+#[test]
+fn list_filters_by_status() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Keep", "Active"]);
+    journey(&home, &["new", "Now", "Paused"]);
+    journey(&home, &["pause", "now-paused"]);
+
+    let active = journey(&home, &["list"]);
+    assert!(active.contains("keep-active"));
+    assert!(!active.contains("now-paused"));
+
+    let paused = journey(&home, &["list", "--status", "paused"]);
+    assert!(paused.contains("now-paused"));
+    assert!(!paused.contains("keep-active"));
 }
 
 #[test]
@@ -332,7 +351,7 @@ fn resume_and_pause_are_lifecycle_status_changes() {
 fn hidden_fzf_helpers_are_not_part_of_the_cli_surface() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
-    journey(&home, &["new", "Ratatui", "Helper"]);
+    journey(&home, &["new", "Fzf", "Helper"]);
 
     let error = journey_fails(&home, &["__fzf-candidates", "--query", "active"]);
     assert!(error.contains("unrecognized subcommand '__fzf-candidates'"));

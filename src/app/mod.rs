@@ -12,16 +12,13 @@ use crate::events;
 use crate::git;
 use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
 use crate::storage::{self, JourneyContext};
-use crate::tui;
-
-pub(crate) const DEFAULT_CAPTURE_DOC: &str = "capture";
 
 pub fn run(cli: Cli) -> Result<String> {
     let home = storage::journey_home()?;
     let cwd = env::current_dir().context("failed to read current directory")?;
 
     match cli.command {
-        None => list_journeys(&home, &cwd, JourneyStatus::Active, false),
+        None => overview(&home),
         Some(Commands::New(args)) => new_journey(&home, &join_words(&args.text), args.description),
         Some(Commands::Capture(args)) => {
             let text = read_capture_input(&args.text)?;
@@ -38,13 +35,8 @@ pub fn run(cli: Cli) -> Result<String> {
         Some(Commands::Resume(args)) => resume(&home, &cwd, args.id.as_deref()),
         Some(Commands::List {
             status,
-            non_interactive,
-        }) => list_journeys(
-            &home,
-            &cwd,
-            status.unwrap_or(JourneyStatus::Active),
-            non_interactive,
-        ),
+            non_interactive: _,
+        }) => list_journeys(&home, status.unwrap_or(JourneyStatus::Active)),
         Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
         Some(Commands::Readme { command }) => readme_command(&home, &cwd, command),
@@ -142,33 +134,25 @@ fn doc_title(path: &Path) -> String {
         .unwrap_or_else(|| "doc".to_string())
 }
 
-fn list_journeys(
-    home: &Path,
-    cwd: &Path,
-    default_filter: JourneyStatus,
-    non_interactive: bool,
-) -> Result<String> {
+const OVERVIEW: &str = "Journey: durable memory for engineering work, operated by agents.\nRun `journey --help` for all commands.";
+
+fn overview(home: &Path) -> Result<String> {
+    let list = list_journeys(home, JourneyStatus::Active)?;
+    Ok(format!("{OVERVIEW}\n\nActive Journeys:\n{list}"))
+}
+
+fn list_journeys(home: &Path, filter: JourneyStatus) -> Result<String> {
     storage::ensure_home(home)?;
     let index = storage::load_index(home)?;
-    let mut rows = index.journeys.into_iter().collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
-
-    if !non_interactive && io::stdout().is_terminal() {
-        return Ok(tui::run_journey_app(home, cwd, default_filter)?.unwrap_or_default());
-    }
-
-    if rows.is_empty() {
-        return Ok("no Journeys".to_string());
-    }
-
-    let rows = rows
+    let mut rows = index
+        .journeys
         .into_iter()
-        .filter(|entry| entry.status == default_filter)
+        .filter(|entry| entry.status == filter)
         .collect::<Vec<_>>();
     if rows.is_empty() {
-        return Ok(format!("no {default_filter} Journeys"));
+        return Ok(format!("no {filter} Journeys"));
     }
-
+    rows.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
     render_journey_table(&rows)
 }
 
@@ -203,37 +187,6 @@ pub(crate) fn status(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String
     out.push_str(&format!("repos: {}\n", ctx.journey.repos.len()));
     out.push_str(&format!("events: {}\n", events.len()));
     Ok(out.trim_end().to_string())
-}
-
-pub(crate) fn done(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> {
-    let mut ctx = storage::resolve_context(home, id, cwd)?;
-    let repos = ctx.journey.repos.clone();
-    for repo in &repos {
-        git::ensure_worktree_removable(&repo.root, &repo.worktree)?;
-    }
-
-    let mut removed = 0;
-    for repo in &repos {
-        git::remove_worktree(&repo.root, &repo.worktree)?;
-        storage::remove_worktree_link(&ctx.path, &repo.name)?;
-        removed += 1;
-    }
-
-    ctx.journey.status = JourneyStatus::Archived;
-    storage::save_journey(&ctx.path, &ctx.journey)?;
-    storage::detach_journey_worktrees(home, &ctx.journey.id)?;
-    let record = events::append_event(
-        &ctx.path,
-        EventKind::StatusChange {
-            status: JourneyStatus::Archived,
-        },
-    )?;
-    finish_mutation(&ctx, Some(record.ts))?;
-
-    Ok(format!(
-        "Journey `{}` is done: archived and removed {} worktrees",
-        ctx.journey.id, removed
-    ))
 }
 
 pub(crate) fn close(

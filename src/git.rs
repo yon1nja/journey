@@ -16,17 +16,8 @@ pub fn discover_repo(path: &Path) -> Result<DiscoveredRepo> {
     Ok(DiscoveredRepo { root, branch })
 }
 
+/// Adds a worktree for `branch`. A new branch starts at `start_point`, or HEAD when unset.
 pub fn create_worktree(
-    root: &Path,
-    worktree: &Path,
-    branch: &str,
-    create_branch: bool,
-) -> Result<()> {
-    create_worktree_from(root, worktree, branch, create_branch, None)
-}
-
-/// Like `create_worktree`, but a new branch starts at `start_point` instead of HEAD.
-pub fn create_worktree_from(
     root: &Path,
     worktree: &Path,
     branch: &str,
@@ -43,22 +34,6 @@ pub fn create_worktree_from(
     } else {
         run_git(root, &["worktree", "add", worktree_arg, branch]).map(|_| ())
     }
-}
-
-pub fn list_branches(root: &Path) -> Result<Vec<String>> {
-    let output = run_git(root, &["branch", "--format=%(refname:short)"])?;
-    let mut branches = output
-        .lines()
-        .map(str::trim)
-        .filter(|branch| !branch.is_empty())
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    branches.sort();
-    branches.dedup();
-    if branches.is_empty() {
-        bail!("no local branches found");
-    }
-    Ok(branches)
 }
 
 pub fn branch_exists(root: &Path, branch: &str) -> Result<bool> {
@@ -202,7 +177,7 @@ mod tests {
         let worktree = temp.path().join("feature-worktree");
         init_repo(&repo);
         git_command(&repo, &["branch", "feature"]);
-        create_worktree(&repo, &worktree, "feature", false).unwrap();
+        create_worktree(&repo, &worktree, "feature", false, None).unwrap();
 
         let existing = worktree_for_branch(&repo, "feature").unwrap();
 

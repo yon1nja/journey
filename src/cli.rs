@@ -7,7 +7,6 @@ use crate::models::JourneyStatus;
 #[derive(Debug, Parser)]
 #[command(name = "journey")]
 #[command(about = "Context persistence for engineering efforts")]
-#[command(after_help = "Run `journey` with no subcommand to start the interactive Journey app.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -15,7 +14,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Create a new Journey without opening the interactive app.
+    /// Create a new Journey.
     New(NewArgs),
     /// Append a quick capture to a Journey-local Markdown doc.
     Capture(CaptureArgs),
@@ -35,13 +34,13 @@ pub enum Commands {
     },
     /// Mark a Journey active.
     Resume(ContextIdArgs),
-    /// List known Journeys.
+    /// List Journeys as tab-separated rows: id, status, updated, repos.
     List {
-        /// Initial status filter for the interactive UI; hard filter with --non-interactive.
+        /// Only list Journeys with this status (defaults to active).
         #[arg(long)]
         status: Option<JourneyStatus>,
-        /// Print table output instead of opening the interactive UI.
-        #[arg(long)]
+        /// Accepted for compatibility; output is always non-interactive.
+        #[arg(long, hide = true)]
         non_interactive: bool,
     },
     /// Print a one-screen Journey summary.
