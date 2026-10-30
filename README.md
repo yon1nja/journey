@@ -79,6 +79,20 @@ alias jy='journey'
 
 ## Quick Start
 
+### With an agent
+
+Journey is meant to be driven by your coding agent. Agents learn it from the tool itself:
+
+```sh
+journey guide
+```
+
+prints what Journey is, when to start a journey, how to record and resume work, and the command reference. The same guide is kept current at `~/.journey/JOURNEY-AGENTS.md`, and every journey's `AGENTS.md` points to it.
+
+Then just ask: "start a journey about the auth failures", "open a journey for this and record everything", or "continue the auth work".
+
+### By hand
+
 ```sh
 # Create a Journey
 journey new "Investigate auth failures" --description "Reproduce and fix intermittent login failures"
@@ -117,7 +131,7 @@ Global state under `JOURNEY_HOME`:
 
 | File | Purpose |
 |---|---|
-| `JOURNEY-AGENTS.md` | Shared coding-agent guidance for all Journeys |
+| `JOURNEY-AGENTS.md` | Agent guide, rewritten to match the installed binary |
 | `index.yaml` | Journey registry used by `list` and discovery |
 | `worktree-index.yaml` | Worktree-to-Journey ownership mapping |
 
@@ -157,6 +171,14 @@ Lifecycle commands never snapshot, stash, restore, or compare code — git remai
 ### `journey` (no subcommand)
 
 Prints a short overview and the active Journey list.
+
+### `journey guide`
+
+```sh
+journey guide
+```
+
+Prints the agent guide embedded in the binary.
 
 ### `journey new`
 

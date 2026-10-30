@@ -24,58 +24,9 @@ pub const CLAUDE_MD_FILE: &str = "CLAUDE.md";
 
 const CLAUDE_MD_TEMPLATE: &str = "@AGENTS.md\n";
 
-const JOURNEY_AGENTS_TEMPLATE: &str = r#"# JOURNEY-AGENTS.md
-
-You are working inside a Journey — a local context container for an engineering effort.
-
-## This Journey
-
-- **Config**: `journey.yaml` in this directory — contains id, title, description, status, and linked repos.
-- **Journal**: `journal.jsonl` — append-only operational event log (link/unlink/status changes).
-- **README**: `README.md` — optional user-owned top-level overview of the Journey.
-- **Docs**: `docs/` — user-owned Markdown files. You may create new docs here but never overwrite existing ones.
-- **Worktrees**: `worktrees/` — symlinks to attached git worktrees (convenience view, not ownership).
-
-Read `journey.yaml` first to understand what this effort is about.
-
-## Journey CLI
-
-The `journey` CLI manages this folder. Key commands:
-
-- `journey status` — show this Journey's summary (run from this directory or any linked worktree).
-- `journey link <repo-path>` — attach a git worktree to this Journey.
-- `journey unlink <name>` — detach a worktree.
-- `journey readme new` — create README.md if it does not already exist.
-- `journey readme path` — print the absolute path to README.md.
-- `journey capture <text>` — append a timestamped quick capture to docs/capture.md.
-- `journey doc new <name>` — create a new doc under `docs/`.
-- `journey doc list` — list existing docs.
-- `journey pause` / `journey resume` — lifecycle transitions.
-- `journey list` — list active Journeys (`--status` for others).
-
-## Working with Config Files
-
-- **`journey.yaml`**: YAML. Do not edit directly — use CLI commands to change status or link/unlink repos. You may read it freely to understand context.
-- **`journal.jsonl`**: JSON Lines, append-only. Do not write to it directly — the CLI appends events automatically.
-- **`README.md`**: User-owned Markdown. Use it for the Journey's top-level overview. Create it through `journey readme new` when missing; do not overwrite existing content.
-- **`docs/*.md`**: You may create and edit these freely. Use them for investigation notes, plans, decisions, or any documentation relevant to the effort.
-
-## Context Resolution
-
-The CLI resolves which Journey you mean by:
-1. Explicit `--journey <id>` flag.
-2. Walking up from cwd looking for `journey.yaml`.
-3. Matching cwd against the worktree index.
-4. Failing with a clear error.
-
-When working inside this folder or any linked worktree, commands resolve automatically.
-
-## Constraints
-
-- Journey is a context container, not a task manager. Do not create task-tracking files, checkpoints, or generated handoff documents.
-- Git owns version control. Do not stash, snapshot, or capture dirty state through Journey.
-- One worktree can be attached to only one active/paused Journey at a time.
-"#;
+/// Agent guidance embedded in the binary. Printed by `journey guide` and
+/// mirrored to `JOURNEY-AGENTS.md` so it never goes stale.
+pub const GUIDE: &str = include_str!("guide.md");
 
 #[derive(Debug, Clone)]
 pub struct JourneyContext {
@@ -96,14 +47,22 @@ pub fn journey_home() -> Result<PathBuf> {
 pub fn ensure_home(home: &Path) -> Result<()> {
     fs::create_dir_all(home.join(JOURNEYS_DIR))
         .with_context(|| format!("failed to create {}", home.join(JOURNEYS_DIR).display()))?;
-    if !home.join(JOURNEY_AGENTS_FILE).exists() {
-        write_string_atomic(&home.join(JOURNEY_AGENTS_FILE), JOURNEY_AGENTS_TEMPLATE)?;
-    }
+    sync_shared_guide(home)?;
     if !home.join(INDEX_FILE).exists() {
         write_yaml_atomic(&home.join(INDEX_FILE), &Index::default())?;
     }
     if !home.join(WORKTREE_INDEX_FILE).exists() {
         write_yaml_atomic(&home.join(WORKTREE_INDEX_FILE), &WorktreeIndex::default())?;
+    }
+    Ok(())
+}
+
+/// Journey owns `JOURNEY-AGENTS.md`: rewrite it whenever it differs from the
+/// guide embedded in this binary.
+fn sync_shared_guide(home: &Path) -> Result<()> {
+    let path = home.join(JOURNEY_AGENTS_FILE);
+    if fs::read_to_string(&path).ok().as_deref() != Some(GUIDE) {
+        write_string_atomic(&path, GUIDE)?;
     }
     Ok(())
 }
@@ -238,7 +197,7 @@ pub fn create_journey(
 
 fn agents_template(home: &Path) -> String {
     format!(
-        "# AGENTS.md\n\n@{}\n\nRead the shared Journey guidance first, then read `journey.yaml` in this directory to understand this effort.\n",
+        "# AGENTS.md\n\n@{}\n\nThis folder is a Journey. Read the guide above (or run `journey guide`), then read `journey.yaml` to see what this effort is.\n",
         home.join(JOURNEY_AGENTS_FILE).display()
     )
 }
@@ -669,8 +628,7 @@ mod tests {
         ensure_home(&home).unwrap();
 
         let agents = fs::read_to_string(home.join(JOURNEY_AGENTS_FILE)).unwrap();
-        assert!(agents.contains("# JOURNEY-AGENTS.md"));
-        assert!(agents.contains("journey capture <text>"));
+        assert_eq!(agents, GUIDE);
         assert!(!home.join("config.toml").exists());
     }
 }

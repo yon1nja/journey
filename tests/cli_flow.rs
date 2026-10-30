@@ -690,3 +690,38 @@ fn close_can_remove_worktrees() {
     assert!(!worktree.exists());
     assert!(repo.exists());
 }
+
+#[test]
+fn guide_is_printed_and_mirrored_to_shared_guidance() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+
+    let guide = journey(&home, &["guide"]);
+    assert!(guide.starts_with("# Journey: guide for agents"));
+    assert!(guide.contains("## When to use it"));
+    assert!(guide.contains("journey close <id> --outcome"));
+
+    let help = journey(&home, &["--help"]);
+    assert!(help.contains("journey guide"));
+
+    journey(&home, &["new", "Guide", "Sync"]);
+    let shared = home.join("JOURNEY-AGENTS.md");
+    assert_eq!(
+        fs::read_to_string(&shared).unwrap().trim_end(),
+        guide.trim_end()
+    );
+
+    let per_journey = home.join("journeys/guide-sync/AGENTS.md");
+    fs::write(&shared, "# stale guidance from an older version\n").unwrap();
+    fs::write(&per_journey, "# my own instructions\n").unwrap();
+
+    journey(&home, &["list"]);
+    assert_eq!(
+        fs::read_to_string(&shared).unwrap().trim_end(),
+        guide.trim_end()
+    );
+    assert_eq!(
+        fs::read_to_string(&per_journey).unwrap(),
+        "# my own instructions\n"
+    );
+}

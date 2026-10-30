@@ -19,6 +19,7 @@ pub fn run(cli: Cli) -> Result<String> {
 
     match cli.command {
         None => overview(&home),
+        Some(Commands::Guide) => Ok(storage::GUIDE.trim_end().to_string()),
         Some(Commands::New(args)) => new_journey(&home, &join_words(&args.text), args.description),
         Some(Commands::Capture(args)) => {
             let text = read_capture_input(&args.text)?;
@@ -134,7 +135,7 @@ fn doc_title(path: &Path) -> String {
         .unwrap_or_else(|| "doc".to_string())
 }
 
-const OVERVIEW: &str = "Journey: durable memory for engineering work, operated by agents.\nRun `journey --help` for all commands.";
+const OVERVIEW: &str = "Journey: durable memory for engineering work, operated by agents.\nAgents: run `journey guide` to learn how to use it. Run `journey --help` for all commands.";
 
 fn overview(home: &Path) -> Result<String> {
     let list = list_journeys(home, JourneyStatus::Active)?;

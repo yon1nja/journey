@@ -6,7 +6,8 @@ use crate::models::JourneyStatus;
 
 #[derive(Debug, Parser)]
 #[command(name = "journey")]
-#[command(about = "Context persistence for engineering efforts")]
+#[command(about = "Durable memory for engineering work, operated by agents")]
+#[command(after_help = "Agents: run `journey guide` to learn what Journey is and how to use it.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -14,6 +15,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Print the agent guide: what Journey is, when to use it, and how.
+    Guide,
     /// Create a new Journey.
     New(NewArgs),
     /// Append a quick capture to a Journey-local Markdown doc.
