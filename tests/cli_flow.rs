@@ -725,3 +725,87 @@ fn guide_is_printed_and_mirrored_to_shared_guidance() {
         "# my own instructions\n"
     );
 }
+
+#[test]
+fn json_output_gives_agents_ids_and_paths() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+
+    let created: serde_json::Value = serde_json::from_str(&journey(
+        &home,
+        &["new", "Json", "Flow", "--description", "Why", "--json"],
+    ))
+    .unwrap();
+    assert_eq!(created["id"], "json-flow");
+    assert_eq!(created["status"], "active");
+    let path = PathBuf::from(created["path"].as_str().unwrap());
+    assert!(path.join("journey.yaml").exists());
+
+    journey(
+        &home,
+        &["link", repo.to_str().unwrap(), "--journey", "json-flow"],
+    );
+    journey(&home, &["doc", "new", "notes", "--journey", "json-flow"]);
+    journey(&home, &["readme", "new", "--journey", "json-flow"]);
+
+    let listed: serde_json::Value =
+        serde_json::from_str(&journey(&home, &["list", "--json"])).unwrap();
+    assert_eq!(listed[0]["id"], "json-flow");
+    assert_eq!(listed[0]["title"], "Json Flow");
+    assert_eq!(listed[0]["repos"][0], "repo");
+    assert_eq!(listed[0]["path"], path.to_str().unwrap());
+
+    let status: serde_json::Value =
+        serde_json::from_str(&journey(&home, &["status", "json-flow", "--json"])).unwrap();
+    assert_eq!(status["description"], "Why");
+    assert_eq!(status["docs"][0], "notes.md");
+    assert_eq!(status["repos"][0]["name"], "repo");
+    assert!(status["repos"][0]["branch"].is_string());
+    assert!(status["readme"].as_str().unwrap().ends_with("README.md"));
+    assert!(status["updated"].is_string());
+
+    let docs: serde_json::Value = serde_json::from_str(&journey(
+        &home,
+        &["doc", "list", "--journey", "json-flow", "--json"],
+    ))
+    .unwrap();
+    assert_eq!(docs[0]["name"], "notes.md");
+    assert!(docs[0]["path"].as_str().unwrap().ends_with("docs/notes.md"));
+
+    let text = journey(&home, &["status", "json-flow"]);
+    assert!(text.contains("docs: 1\n  notes.md"));
+    assert!(text.contains("repos: 1\n  repo\t"));
+}
+
+#[test]
+fn list_search_finds_journeys_across_statuses() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(
+        &home,
+        &["new", "Auth", "Failures", "--description", "Token refresh"],
+    );
+    journey(&home, &["new", "Billing", "Export"]);
+    journey(&home, &["new", "Old", "Auth", "Work"]);
+    journey(&home, &["archive", "old-auth-work"]);
+
+    let found = journey(&home, &["list", "--search", "AUTH"]);
+    assert!(found.contains("auth-failures"));
+    assert!(found.contains("old-auth-work"));
+    assert!(!found.contains("billing-export"));
+
+    let by_description = journey(&home, &["list", "--search", "refresh"]);
+    assert!(by_description.contains("auth-failures"));
+
+    let active_only = journey(&home, &["list", "--search", "auth", "--status", "active"]);
+    assert!(!active_only.contains("old-auth-work"));
+
+    let none = journey(&home, &["list", "--search", "nothing-here"]);
+    assert_eq!(none.trim(), "no Journeys match `nothing-here`");
+
+    let all = journey(&home, &["list", "--all"]);
+    assert!(all.contains("billing-export"));
+    assert!(all.contains("old-auth-work"));
+}

@@ -19,6 +19,8 @@ The user directs; you do the work. Users rarely open journeys themselves. They t
 
 ## Starting a journey
 
+First check that one doesn't already exist: `journey list --search "<words>"`. Then:
+
 ```sh
 journey new "<title>" --description "<what this effort is and why it exists>"
 ```
@@ -43,9 +45,10 @@ What goes inside a journey belongs to the user, and Journey prescribes no struct
 ## Resuming
 
 ```sh
+journey list --search "<words>"   # is there already a journey for this? (every status)
 journey list                      # active journeys: id, status, updated, repos
-journey list --status paused      # or done, archived, abandoned
-journey status <id>               # summary, including the folder path
+journey list --status paused      # or done, archived, abandoned; --all for every status
+journey status <id>               # summary: path, README, docs, repos and branches
 ```
 
 Then go to the journey folder and read how it is run (as above) before continuing. Commands also resolve the journey automatically when run from inside its folder or a linked worktree.
@@ -73,7 +76,7 @@ This marks it `done` and releases its worktrees (they stay on disk unless you pa
 | Command | What it does |
 |---|---|
 | `journey new <title> [--description <text>]` | Create a journey |
-| `journey list [--status <status>]` | List journeys with a status (default: active) |
+| `journey list [--status <s> \| --all] [--search <text>]` | List journeys (default: active) or search them |
 | `journey status [<id>]` | Show a journey's summary |
 | `journey link <path> [--name <name>]` | Link an existing repo or worktree |
 | `journey unlink <name>` | Unlink a repo or worktree (leaves it on disk) |
@@ -85,5 +88,7 @@ This marks it `done` and releases its worktrees (they stay on disk unless you pa
 | `journey close [<id>] --outcome <text>` | Finish a journey with an outcome |
 | `journey pause` / `resume` / `archive` / `abandon` `[<id>]` | Other lifecycle changes |
 | `journey guide` | Print this guide |
+
+`new`, `list`, `status` and `doc list` accept `--json`, which includes each journey's folder path. Prefer it when you need to parse output.
 
 Commands that act on one journey take `--journey <id>` (or a positional id for lifecycle commands). Without it, they resolve the journey from the current directory: the journey folder itself, or a linked worktree.

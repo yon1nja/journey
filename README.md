@@ -191,10 +191,10 @@ Creates a Journey with `journey.yaml`, `journal.jsonl`, `AGENTS.md`, and `CLAUDE
 ### `journey list`
 
 ```sh
-journey list [--status active|paused|done|archived|abandoned]
+journey list [--status active|paused|done|archived|abandoned | --all] [--search <text>] [--json]
 ```
 
-Lists Journeys with the given status (default: active) as tab-separated rows: `<id> <status> <updated> <repos>`.
+Lists Journeys with the given status (default: active) as tab-separated rows: `<id> <status> <updated> <repos>`. `--search` matches id, title, description, and repo names, case-insensitively, across every status unless `--status` is given.
 
 ### `journey status`
 
@@ -202,7 +202,11 @@ Lists Journeys with the given status (default: active) as tab-separated rows: `<
 journey status [<id>]
 ```
 
-Prints a one-screen summary: title, description, ID, status, path, repo count, and event count.
+Prints a summary: title, description, ID, status, outcome, path, README, docs, linked repos with branch and worktree, and event count.
+
+### JSON output
+
+`journey new`, `journey list`, `journey status`, and `journey doc list` accept `--json` for output agents and scripts can parse. JSON output includes each Journey's folder path.
 
 ### `journey link` / `journey unlink`
 

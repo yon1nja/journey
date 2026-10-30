@@ -40,14 +40,29 @@ pub enum Commands {
     /// List Journeys as tab-separated rows: id, status, updated, repos.
     List {
         /// Only list Journeys with this status (defaults to active).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         status: Option<JourneyStatus>,
+        /// List Journeys of every status.
+        #[arg(long)]
+        all: bool,
+        /// Only list Journeys whose id, title, description, or repo names contain this text.
+        /// Searches every status unless --status is given.
+        #[arg(long)]
+        search: Option<String>,
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
         /// Accepted for compatibility; output is always non-interactive.
         #[arg(long, hide = true)]
         non_interactive: bool,
     },
     /// Print a one-screen Journey summary.
-    Status { id: Option<String> },
+    Status {
+        id: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage Journey-local docs.
     Doc {
         #[command(subcommand)]
@@ -134,6 +149,9 @@ pub struct NewArgs {
     pub text: Vec<String>,
     #[arg(short, long)]
     pub description: Option<String>,
+    /// Print the new Journey as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -163,6 +181,9 @@ pub enum DocCommands {
     List {
         #[arg(long)]
         journey: Option<String>,
+        /// Print JSON instead of one name per line.
+        #[arg(long)]
+        json: bool,
     },
     /// Print the absolute path to a Journey doc.
     Path {

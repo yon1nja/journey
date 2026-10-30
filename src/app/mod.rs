@@ -1,3 +1,4 @@
+mod report;
 mod worktree;
 
 use std::env;
@@ -11,7 +12,9 @@ use crate::cli::{join_words, Cli, Commands, DocCommands, ReadmeCommands, Worktre
 use crate::events;
 use crate::git;
 use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
+
 use crate::storage::{self, JourneyContext};
+use report::ListFilter;
 
 pub fn run(cli: Cli) -> Result<String> {
     let home = storage::journey_home()?;
@@ -20,7 +23,9 @@ pub fn run(cli: Cli) -> Result<String> {
     match cli.command {
         None => overview(&home),
         Some(Commands::Guide) => Ok(storage::GUIDE.trim_end().to_string()),
-        Some(Commands::New(args)) => new_journey(&home, &join_words(&args.text), args.description),
+        Some(Commands::New(args)) => {
+            report::new_journey(&home, &join_words(&args.text), args.description, args.json)
+        }
         Some(Commands::Capture(args)) => {
             let text = read_capture_input(&args.text)?;
             capture(&home, &cwd, args.journey.as_deref(), &args.doc, &text)
@@ -36,9 +41,20 @@ pub fn run(cli: Cli) -> Result<String> {
         Some(Commands::Resume(args)) => resume(&home, &cwd, args.id.as_deref()),
         Some(Commands::List {
             status,
+            all,
+            search,
+            json,
             non_interactive: _,
-        }) => list_journeys(&home, status.unwrap_or(JourneyStatus::Active)),
-        Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
+        }) => report::list_journeys(
+            &home,
+            &ListFilter {
+                status,
+                all,
+                search: search.as_deref(),
+            },
+            json,
+        ),
+        Some(Commands::Status { id, json }) => report::status(&home, &cwd, id.as_deref(), json),
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
         Some(Commands::Readme { command }) => readme_command(&home, &cwd, command),
         Some(Commands::Doctor { repair }) => doctor(&home, repair),
@@ -62,17 +78,7 @@ pub fn run(cli: Cli) -> Result<String> {
     }
 }
 
-pub(crate) fn new_journey(home: &Path, title: &str, description: Option<String>) -> Result<String> {
-    let now = events::now_rfc3339()?;
-    let ctx = storage::create_journey(home, title, clean_optional(description), &now)?;
-    Ok(format!(
-        "created Journey `{}` at {}",
-        ctx.journey.id,
-        ctx.path.display()
-    ))
-}
-
-fn clean_optional(value: Option<String>) -> Option<String> {
+pub(crate) fn clean_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -138,56 +144,13 @@ fn doc_title(path: &Path) -> String {
 const OVERVIEW: &str = "Journey: durable memory for engineering work, operated by agents.\nAgents: run `journey guide` to learn how to use it. Run `journey --help` for all commands.";
 
 fn overview(home: &Path) -> Result<String> {
-    let list = list_journeys(home, JourneyStatus::Active)?;
+    let filter = ListFilter {
+        status: None,
+        all: false,
+        search: None,
+    };
+    let list = report::list_journeys(home, &filter, false)?;
     Ok(format!("{OVERVIEW}\n\nActive Journeys:\n{list}"))
-}
-
-fn list_journeys(home: &Path, filter: JourneyStatus) -> Result<String> {
-    storage::ensure_home(home)?;
-    let index = storage::load_index(home)?;
-    let mut rows = index
-        .journeys
-        .into_iter()
-        .filter(|entry| entry.status == filter)
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
-        return Ok(format!("no {filter} Journeys"));
-    }
-    rows.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
-    render_journey_table(&rows)
-}
-
-fn render_journey_table(rows: &[IndexEntry]) -> Result<String> {
-    let mut out = String::new();
-    for entry in rows {
-        let repos = if entry.repos.is_empty() {
-            "no repos".to_string()
-        } else {
-            entry.repos.join(", ")
-        };
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\n",
-            entry.id, entry.status, entry.updated, repos
-        ));
-    }
-    Ok(out.trim_end().to_string())
-}
-
-pub(crate) fn status(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> {
-    let ctx = storage::resolve_context(home, id, cwd)?;
-    let events = events::read_events(&ctx.path)?;
-
-    let mut out = String::new();
-    out.push_str(&format!("{}\n", ctx.journey.title));
-    if let Some(description) = &ctx.journey.description {
-        out.push_str(&format!("description: {description}\n"));
-    }
-    out.push_str(&format!("id: {}\n", ctx.journey.id));
-    out.push_str(&format!("status: {}\n", ctx.journey.status));
-    out.push_str(&format!("path: {}\n", ctx.path.display()));
-    out.push_str(&format!("repos: {}\n", ctx.journey.repos.len()));
-    out.push_str(&format!("events: {}\n", events.len()));
-    Ok(out.trim_end().to_string())
 }
 
 pub(crate) fn close(
@@ -295,30 +258,8 @@ fn doc_command(home: &Path, cwd: &Path, command: DocCommands) -> Result<String> 
             storage::update_index_entry(home, &ctx.journey, &now)?;
             Ok(path.display().to_string())
         }
-        DocCommands::List { journey } => {
-            let ctx = storage::resolve_context(home, journey.as_deref(), cwd)?;
-            let docs_dir = ctx.path.join(storage::DOCS_DIR);
-            if !docs_dir.exists() {
-                return Ok("no docs".to_string());
-            }
-            let mut docs = fs::read_dir(&docs_dir)?
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    if path.is_file() {
-                        path.file_name()
-                            .map(|name| name.to_string_lossy().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            docs.sort();
-            if docs.is_empty() {
-                Ok("no docs".to_string())
-            } else {
-                Ok(docs.join("\n"))
-            }
+        DocCommands::List { journey, json } => {
+            report::list_docs(home, cwd, journey.as_deref(), json)
         }
         DocCommands::Path { name, journey } => {
             let ctx = storage::resolve_context(home, journey.as_deref(), cwd)?;
