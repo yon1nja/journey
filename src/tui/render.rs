@@ -1011,6 +1011,7 @@ pub(super) fn status_style(status: JourneyStatus) -> Style {
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD),
         JourneyStatus::Paused => Style::default().fg(Color::Yellow),
+        JourneyStatus::Done => Style::default().fg(Color::Cyan),
         JourneyStatus::Archived => Style::default().fg(Color::DarkGray),
         JourneyStatus::Abandoned => Style::default().fg(Color::Red),
     }

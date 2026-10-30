@@ -22,11 +22,24 @@ pub fn create_worktree(
     branch: &str,
     create_branch: bool,
 ) -> Result<()> {
+    create_worktree_from(root, worktree, branch, create_branch, None)
+}
+
+/// Like `create_worktree`, but a new branch starts at `start_point` instead of HEAD.
+pub fn create_worktree_from(
+    root: &Path,
+    worktree: &Path,
+    branch: &str,
+    create_branch: bool,
+    start_point: Option<&str>,
+) -> Result<()> {
     let worktree_arg = worktree.to_str().ok_or_else(|| {
         anyhow::anyhow!("worktree path is not valid UTF-8: {}", worktree.display())
     })?;
     if create_branch {
-        run_git(root, &["worktree", "add", "-b", branch, worktree_arg]).map(|_| ())
+        let mut args = vec!["worktree", "add", "-b", branch, worktree_arg];
+        args.extend(start_point);
+        run_git(root, &args).map(|_| ())
     } else {
         run_git(root, &["worktree", "add", worktree_arg, branch]).map(|_| ())
     }
@@ -46,6 +59,27 @@ pub fn list_branches(root: &Path) -> Result<Vec<String>> {
         bail!("no local branches found");
     }
     Ok(branches)
+}
+
+pub fn branch_exists(root: &Path, branch: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .with_context(|| format!("failed to run git in {}", root.display()))?;
+    Ok(output.status.success())
+}
+
+/// The repository's main working tree, even when `root` is a linked worktree.
+pub fn main_worktree(root: &Path) -> Result<PathBuf> {
+    let output = run_git(root, &["worktree", "list", "--porcelain"])?;
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("git worktree list did not report any worktrees"))
 }
 
 pub fn worktree_for_branch(root: &Path, branch: &str) -> Result<Option<PathBuf>> {

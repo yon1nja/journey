@@ -173,16 +173,17 @@ This means `journey status`, `journey capture`, and doc commands work from insid
 |---|---|---|
 | `active` | Current or ongoing work | Yes |
 | `paused` | Not currently active, but resumable | Yes |
+| `done` | Finished, closed with an outcome | No (released) |
 | `archived` | Completed or closed, kept for reference | No (released) |
 | `abandoned` | Stopped, not expected to continue | No (released) |
 
 A canonical worktree path can belong to only one active or paused Journey at a time.
 
-When a Journey is archived or abandoned, its worktrees are detached from the global ownership index but **not deleted from disk**. The Journey folder and repo references remain intact.
+When a Journey is done, archived, or abandoned, its worktrees are detached from the global ownership index but **not deleted from disk**. The Journey folder and repo references remain intact.
 
-When an archived or abandoned Journey is resumed, Journey attempts to reattach its worktrees. Reattachment fails if a worktree is missing or already owned by another active/paused Journey.
+When a done, archived, or abandoned Journey is resumed, Journey attempts to reattach its worktrees. Reattachment fails if a worktree is missing or already owned by another active/paused Journey.
 
-Lifecycle commands never snapshot, stash, restore, or compare code — git remains responsible for code state. The one exception is the interactive `done` action, which archives the Journey and removes linked worktrees after confirmation.
+Lifecycle commands never snapshot, stash, restore, or compare code — git remains responsible for code state. The one exception is `journey close --remove-worktrees`, which removes linked worktrees from disk after checking they have no uncommitted changes.
 
 ## Commands
 
@@ -231,6 +232,25 @@ journey pause [<id>]
 journey archive [<id>]
 journey abandon [<id>]
 ```
+
+### `journey close`
+
+```sh
+journey close [<id>] --outcome <text> [--remove-worktrees]
+```
+
+Marks a Journey `done` and records a one-line outcome in `journey.yaml` and the journal. The outcome is required. Worktree ownership is released; `--remove-worktrees` also removes the linked worktrees from disk.
+
+### `journey worktree`
+
+```sh
+journey worktree new --branch <name> [--from <start>] [--repo <path>] [--path <dir>] [--name <name>] [--journey <id>]
+journey worktree remove <name> [--journey <id>]
+```
+
+`new` creates a git worktree for a branch and links it. A missing branch is created from `--from` (default: HEAD). An existing branch that is already checked out somewhere is linked in place. The default location is `<repo>/.worktrees/<branch>`.
+
+`remove` deletes a linked worktree from disk and unlinks it. It refuses the main working tree and worktrees with uncommitted changes.
 
 ### `journey capture`
 

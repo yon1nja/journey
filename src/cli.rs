@@ -68,6 +68,62 @@ pub enum Commands {
     Archive(ContextIdArgs),
     /// Mark a Journey abandoned.
     Abandon(ContextIdArgs),
+    /// Close a finished Journey with an outcome and mark it done.
+    ///
+    /// Releases worktree ownership. The worktrees stay on disk unless
+    /// --remove-worktrees is passed.
+    Close(CloseArgs),
+    /// Create, link, or remove git worktrees for a Journey.
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommands,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct CloseArgs {
+    pub id: Option<String>,
+    /// One line describing how the effort ended.
+    #[arg(long)]
+    pub outcome: String,
+    /// Also remove the linked worktrees from disk. Refuses if any has uncommitted changes.
+    #[arg(long)]
+    pub remove_worktrees: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorktreeCommands {
+    /// Create a worktree for a branch and link it to the Journey.
+    ///
+    /// Creates the branch if it does not exist. If the branch is already
+    /// checked out in a worktree, links that worktree instead.
+    New {
+        /// Branch to check out in the new worktree.
+        #[arg(long)]
+        branch: String,
+        /// Start point for a new branch (defaults to the repo's HEAD).
+        #[arg(long)]
+        from: Option<String>,
+        /// Repository to create the worktree in (defaults to the current directory).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Worktree location (defaults to <repo>/.worktrees/<branch>).
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Name to link the worktree under (defaults to the worktree folder name).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        journey: Option<String>,
+    },
+    /// Remove a linked worktree from disk and unlink it.
+    ///
+    /// Refuses to remove the main working tree or a worktree with uncommitted changes.
+    Remove {
+        name: String,
+        #[arg(long)]
+        journey: Option<String>,
+    },
 }
 
 #[derive(Debug, Args)]

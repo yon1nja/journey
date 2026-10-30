@@ -207,6 +207,7 @@ pub fn create_journey(
         description: description.clone(),
         status: JourneyStatus::Active,
         created: now.to_string(),
+        outcome: None,
         repos: Vec::new(),
     };
 
@@ -423,11 +424,7 @@ pub fn rebuild_worktree_index(home: &Path, attached_at: &str) -> Result<Worktree
     let index = load_index(home)?;
     let mut worktree_index = WorktreeIndex::default();
 
-    for entry in index
-        .journeys
-        .iter()
-        .filter(|entry| matches!(entry.status, JourneyStatus::Active | JourneyStatus::Paused))
-    {
+    for entry in index.journeys.iter().filter(|entry| entry.status.is_open()) {
         let journey_path = journey_dir(home, &entry.id);
         if !journey_path.join(JOURNEY_FILE).exists() {
             continue;

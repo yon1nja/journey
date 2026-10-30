@@ -464,3 +464,210 @@ fn doctor_repair_rebuilds_worktree_index() {
     let listed = journey_in(&home, Some(&repo), &["doc", "list"]);
     assert_eq!(listed.trim(), "no docs");
 }
+
+#[test]
+fn worktree_new_creates_branch_worktree_and_links_it() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    journey(&home, &["new", "Worktree", "Flow"]);
+
+    let created = journey_in(
+        &home,
+        Some(&repo),
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "feat/thing",
+            "--journey",
+            "worktree-flow",
+        ],
+    );
+    let worktree = repo.join(".worktrees/feat-thing");
+    assert!(created.contains("created branch `feat/thing`"));
+    assert!(worktree.join("README.md").exists());
+    assert_eq!(
+        git(&worktree, &["branch", "--show-current"]).trim(),
+        "feat/thing"
+    );
+
+    let journey_yaml =
+        fs::read_to_string(home.join("journeys/worktree-flow/journey.yaml")).unwrap();
+    assert!(journey_yaml.contains("name: feat-thing"));
+    assert!(journey_yaml.contains("branch: feat/thing"));
+
+    let removed = journey(
+        &home,
+        &[
+            "worktree",
+            "remove",
+            "feat-thing",
+            "--journey",
+            "worktree-flow",
+        ],
+    );
+    assert!(removed.contains("deleted worktree"));
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn worktree_new_reuses_existing_branches() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    git(&repo, &["branch", "existing"]);
+    git(&repo, &["branch", "checked-out"]);
+    let elsewhere = temp.path().join("elsewhere");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            elsewhere.to_str().unwrap(),
+            "checked-out",
+        ],
+    );
+    journey(&home, &["new", "Reuse", "Branches"]);
+
+    let checked_out = journey(
+        &home,
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "existing",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--journey",
+            "reuse-branches",
+        ],
+    );
+    assert!(checked_out.contains("checked out branch `existing`"));
+    assert!(repo.join(".worktrees/existing").exists());
+
+    let reused = journey(
+        &home,
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "checked-out",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--journey",
+            "reuse-branches",
+        ],
+    );
+    assert!(reused.contains("already checked out"));
+    assert!(reused.contains("linked `elsewhere`"));
+
+    let error = journey_fails(
+        &home,
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "existing",
+            "--from",
+            "HEAD",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--journey",
+            "reuse-branches",
+        ],
+    );
+    assert!(error.contains("--from only applies to new branches"));
+}
+
+#[test]
+fn close_requires_outcome_and_marks_done() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    journey(&home, &["new", "Close", "Flow"]);
+    journey(
+        &home,
+        &["link", repo.to_str().unwrap(), "--journey", "close-flow"],
+    );
+
+    let error = journey_fails(&home, &["close", "close-flow"]);
+    assert!(error.contains("--outcome"));
+
+    let closed = journey(
+        &home,
+        &["close", "close-flow", "--outcome", "Fixed the race"],
+    );
+    assert!(closed.contains("Journey `close-flow` is done (detached 1 worktrees)"));
+    assert!(repo.exists());
+
+    let status = journey(&home, &["status", "close-flow"]);
+    assert!(status.contains("status: done"));
+    let journey_yaml = fs::read_to_string(home.join("journeys/close-flow/journey.yaml")).unwrap();
+    assert!(journey_yaml.contains("outcome: Fixed the race"));
+    let journal = fs::read_to_string(home.join("journeys/close-flow/journal.jsonl")).unwrap();
+    assert!(journal.contains("\"type\":\"close\""));
+    assert!(journal.contains("Fixed the race"));
+
+    let error = journey_fails(&home, &["close", "close-flow", "--outcome", "again"]);
+    assert!(error.contains("already done"));
+
+    let resumed = journey(&home, &["resume", "close-flow"]);
+    assert!(resumed.contains("attached 1 worktrees"));
+    let journey_yaml = fs::read_to_string(home.join("journeys/close-flow/journey.yaml")).unwrap();
+    assert!(!journey_yaml.contains("outcome:"));
+}
+
+#[test]
+fn close_can_remove_worktrees() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    journey(&home, &["new", "Close", "Remove"]);
+    journey_in(
+        &home,
+        Some(&repo),
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "side",
+            "--journey",
+            "close-remove",
+        ],
+    );
+    let worktree = repo.join(".worktrees/side");
+    fs::write(worktree.join("dirty.txt"), "dirty\n").unwrap();
+
+    let error = journey_fails(
+        &home,
+        &[
+            "close",
+            "close-remove",
+            "--outcome",
+            "Done",
+            "--remove-worktrees",
+        ],
+    );
+    assert!(error.contains("uncommitted changes"));
+    assert!(worktree.exists());
+
+    fs::remove_file(worktree.join("dirty.txt")).unwrap();
+    let closed = journey(
+        &home,
+        &[
+            "close",
+            "close-remove",
+            "--outcome",
+            "Done",
+            "--remove-worktrees",
+        ],
+    );
+    assert!(closed.contains("removed 1 worktrees"));
+    assert!(!worktree.exists());
+    assert!(repo.exists());
+}

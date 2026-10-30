@@ -1215,6 +1215,7 @@ impl StatusFilter {
         match self {
             StatusFilter::Status(JourneyStatus::Active) => "active",
             StatusFilter::Status(JourneyStatus::Paused) => "paused",
+            StatusFilter::Status(JourneyStatus::Done) => "done",
             StatusFilter::Status(JourneyStatus::Archived) => "archived",
             StatusFilter::Status(JourneyStatus::Abandoned) => "abandoned",
             StatusFilter::All => "all",
@@ -1225,6 +1226,7 @@ impl StatusFilter {
         let values = [
             StatusFilter::Status(JourneyStatus::Active),
             StatusFilter::Status(JourneyStatus::Paused),
+            StatusFilter::Status(JourneyStatus::Done),
             StatusFilter::Status(JourneyStatus::Archived),
             StatusFilter::Status(JourneyStatus::Abandoned),
             StatusFilter::All,

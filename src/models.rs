@@ -11,8 +11,16 @@ use serde::{Deserialize, Serialize};
 pub enum JourneyStatus {
     Active,
     Paused,
+    Done,
     Archived,
     Abandoned,
+}
+
+impl JourneyStatus {
+    /// Open Journeys may own worktrees; closed ones release them.
+    pub fn is_open(self) -> bool {
+        matches!(self, JourneyStatus::Active | JourneyStatus::Paused)
+    }
 }
 
 impl fmt::Display for JourneyStatus {
@@ -20,6 +28,7 @@ impl fmt::Display for JourneyStatus {
         let value = match self {
             JourneyStatus::Active => "active",
             JourneyStatus::Paused => "paused",
+            JourneyStatus::Done => "done",
             JourneyStatus::Archived => "archived",
             JourneyStatus::Abandoned => "abandoned",
         };
@@ -34,6 +43,7 @@ impl FromStr for JourneyStatus {
         match value {
             "active" => Ok(JourneyStatus::Active),
             "paused" => Ok(JourneyStatus::Paused),
+            "done" => Ok(JourneyStatus::Done),
             "archived" => Ok(JourneyStatus::Archived),
             "abandoned" => Ok(JourneyStatus::Abandoned),
             other => Err(format!("unknown journey status: {other}")),
@@ -81,6 +91,8 @@ pub struct JourneyFile {
     pub description: Option<String>,
     pub status: JourneyStatus,
     pub created: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     #[serde(default)]
     pub repos: Vec<RepoRef>,
 }
@@ -119,6 +131,9 @@ pub enum EventKind {
     },
     StatusChange {
         status: JourneyStatus,
+    },
+    Close {
+        outcome: String,
     },
     #[serde(other)]
     Legacy,

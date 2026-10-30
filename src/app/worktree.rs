@@ -67,6 +67,87 @@ pub(crate) fn link_repo(
     ))
 }
 
+pub(crate) struct WorktreeRequest<'a> {
+    pub repo: Option<&'a Path>,
+    pub branch: &'a str,
+    pub from: Option<&'a str>,
+    pub path: Option<&'a Path>,
+    pub name: Option<String>,
+}
+
+pub(crate) fn create_worktree(
+    home: &Path,
+    cwd: &Path,
+    id: Option<&str>,
+    request: &WorktreeRequest<'_>,
+) -> Result<String> {
+    let ctx = storage::resolve_context(home, id, cwd)?;
+    let branch = request.branch.trim();
+    if branch.is_empty() {
+        bail!("branch cannot be empty");
+    }
+    let repo_dir = match request.repo {
+        Some(repo) => cwd.join(repo),
+        None => cwd.to_path_buf(),
+    };
+    let discovered = git::discover_repo(&repo_dir)?;
+    let main = git::main_worktree(&discovered.root)?;
+    let requested_path = request.path.map(|path| cwd.join(path));
+
+    let existing_branch = git::branch_exists(&main, branch)?;
+    if existing_branch && request.from.is_some() {
+        bail!("branch `{branch}` already exists; --from only applies to new branches");
+    }
+
+    if existing_branch {
+        if let Some(worktree) = git::worktree_for_branch(&main, branch)? {
+            if let Some(path) = &requested_path {
+                if storage::canonicalize_existing(path).ok()
+                    != storage::canonicalize_existing(&worktree).ok()
+                {
+                    bail!(
+                        "branch `{branch}` is already checked out at {}",
+                        worktree.display()
+                    );
+                }
+            }
+            let linked = link_repo(
+                home,
+                cwd,
+                Some(&ctx.journey.id),
+                &worktree,
+                request.name.clone(),
+            )?;
+            return Ok(format!(
+                "branch `{branch}` is already checked out at {}\n{linked}",
+                worktree.display()
+            ));
+        }
+    }
+
+    let path =
+        requested_path.unwrap_or_else(|| main.join(".worktrees").join(storage::slugify(branch)));
+    git::create_worktree_from(&main, &path, branch, !existing_branch, request.from)?;
+    let name = match &request.name {
+        Some(name) => name.clone(),
+        None => path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "worktree".to_string()),
+    };
+    let linked = link_repo(home, cwd, Some(&ctx.journey.id), &path, Some(name))
+        .with_context(|| format!("created worktree {} but failed to link it", path.display()))?;
+    let action = if existing_branch {
+        "checked out"
+    } else {
+        "created"
+    };
+    Ok(format!(
+        "{action} branch `{branch}` in worktree {}\n{linked}",
+        path.display()
+    ))
+}
+
 pub(crate) fn unlink_repo(
     home: &Path,
     cwd: &Path,

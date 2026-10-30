@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::cli::{join_words, Cli, Commands, DocCommands, ReadmeCommands};
+use crate::cli::{join_words, Cli, Commands, DocCommands, ReadmeCommands, WorktreeCommands};
 use crate::events;
 use crate::git;
 use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
@@ -58,6 +58,14 @@ pub fn run(cli: Cli) -> Result<String> {
         Some(Commands::Abandon(args)) => {
             set_status(&home, &cwd, args.id.as_deref(), JourneyStatus::Abandoned)
         }
+        Some(Commands::Close(args)) => close(
+            &home,
+            &cwd,
+            args.id.as_deref(),
+            &args.outcome,
+            args.remove_worktrees,
+        ),
+        Some(Commands::Worktree { command }) => worktree_command(&home, &cwd, command),
     }
 }
 
@@ -228,6 +236,89 @@ pub(crate) fn done(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> 
     ))
 }
 
+pub(crate) fn close(
+    home: &Path,
+    cwd: &Path,
+    id: Option<&str>,
+    outcome: &str,
+    remove_worktrees: bool,
+) -> Result<String> {
+    let outcome = outcome.trim();
+    if outcome.is_empty() {
+        bail!("outcome cannot be empty");
+    }
+    let mut ctx = storage::resolve_context(home, id, cwd)?;
+    if ctx.journey.status == JourneyStatus::Done {
+        bail!(
+            "Journey `{}` is already done; resume it first to close it again",
+            ctx.journey.id
+        );
+    }
+
+    let mut removed = 0;
+    if remove_worktrees {
+        for repo in &ctx.journey.repos {
+            git::ensure_worktree_removable(&repo.root, &repo.worktree)?;
+        }
+        for repo in &ctx.journey.repos {
+            git::remove_worktree(&repo.root, &repo.worktree)?;
+            storage::remove_worktree_link(&ctx.path, &repo.name)?;
+            removed += 1;
+        }
+    }
+
+    ctx.journey.status = JourneyStatus::Done;
+    ctx.journey.outcome = Some(outcome.to_string());
+    storage::save_journey(&ctx.path, &ctx.journey)?;
+    let detached = storage::detach_journey_worktrees(home, &ctx.journey.id)?;
+    let record = events::append_event(
+        &ctx.path,
+        EventKind::Close {
+            outcome: outcome.to_string(),
+        },
+    )?;
+    finish_mutation(&ctx, Some(record.ts))?;
+
+    if remove_worktrees {
+        Ok(format!(
+            "Journey `{}` is done (removed {removed} worktrees)",
+            ctx.journey.id
+        ))
+    } else {
+        Ok(format!(
+            "Journey `{}` is done (detached {detached} worktrees)",
+            ctx.journey.id
+        ))
+    }
+}
+
+fn worktree_command(home: &Path, cwd: &Path, command: WorktreeCommands) -> Result<String> {
+    match command {
+        WorktreeCommands::New {
+            branch,
+            from,
+            repo,
+            path,
+            name,
+            journey,
+        } => create_worktree(
+            home,
+            cwd,
+            journey.as_deref(),
+            &WorktreeRequest {
+                repo: repo.as_deref(),
+                branch: &branch,
+                from: from.as_deref(),
+                path: path.as_deref(),
+                name,
+            },
+        ),
+        WorktreeCommands::Remove { name, journey } => {
+            delete_worktree(home, cwd, journey.as_deref(), &name)
+        }
+    }
+}
+
 pub(crate) fn resume(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> {
     set_status(home, cwd, id, JourneyStatus::Active)
 }
@@ -390,18 +481,17 @@ pub(crate) fn set_status(
     let mut ctx = storage::resolve_context(home, id, cwd)?;
     let previous_status = ctx.journey.status;
     let now = events::now_rfc3339()?;
-    let attached = if matches!(status, JourneyStatus::Active | JourneyStatus::Paused)
-        && matches!(
-            previous_status,
-            JourneyStatus::Archived | JourneyStatus::Abandoned
-        ) {
+    let attached = if status.is_open() && !previous_status.is_open() {
         storage::attach_journey_worktrees(home, &ctx.journey, &now)?
     } else {
         0
     };
     ctx.journey.status = status;
+    if status.is_open() {
+        ctx.journey.outcome = None;
+    }
     storage::save_journey(&ctx.path, &ctx.journey)?;
-    let detached = if matches!(status, JourneyStatus::Archived | JourneyStatus::Abandoned) {
+    let detached = if !status.is_open() {
         storage::detach_journey_worktrees(home, &ctx.journey.id)?
     } else {
         0
@@ -442,4 +532,6 @@ fn validate_name(name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-pub(crate) use worktree::{delete_worktree, link_repo, unlink_repo};
+pub(crate) use worktree::{
+    create_worktree, delete_worktree, link_repo, unlink_repo, WorktreeRequest,
+};
