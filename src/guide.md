@@ -106,6 +106,7 @@ The outcome is required. This marks it `done` and releases its worktrees (they s
 | `journey pause` / `resume` / `archive` / `abandon` `[<id>]` | Other lifecycle changes |
 | `journey guide` | Print this guide |
 | `journey skills install` | Install or update the Journey skills for Claude Code |
+| `journey migrate [--dry-run]` | Upgrade state left by an earlier Journey version |
 
 `new`, `list`, `status` and `doc list` accept `--json`, which includes each journey's folder path. Prefer it when you need to parse output.
 

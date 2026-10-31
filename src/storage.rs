@@ -23,7 +23,7 @@ pub const JOURNEY_AGENTS_FILE: &str = "JOURNEY-AGENTS.md";
 pub const AGENTS_FILE: &str = "AGENTS.md";
 pub const CLAUDE_MD_FILE: &str = "CLAUDE.md";
 
-const CLAUDE_MD_TEMPLATE: &str = "@AGENTS.md\n";
+pub(crate) const CLAUDE_MD_TEMPLATE: &str = "@AGENTS.md\n";
 
 /// Agent guidance embedded in the binary. Printed by `journey guide` and
 /// mirrored to `JOURNEY-AGENTS.md` so it never goes stale.
@@ -199,7 +199,7 @@ pub fn create_journey(home: &Path, new: NewJourney<'_>, now: &str) -> Result<Jou
     })
 }
 
-fn agents_template(home: &Path) -> String {
+pub(crate) fn agents_template(home: &Path) -> String {
     format!(
         "# AGENTS.md\n\n@{}\n\nThis folder is a Journey. Read the guide above (or run `journey guide`), then read `journey.yaml` to see what this effort is.\n",
         home.join(JOURNEY_AGENTS_FILE).display()

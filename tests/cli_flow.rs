@@ -964,3 +964,74 @@ fn skills_install_update_and_remove() {
     assert!(dir.join("journey-resume").exists());
     assert!(dir.join("other-skill").exists());
 }
+
+#[test]
+fn migrate_upgrades_only_unedited_legacy_files() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Pointer"]);
+    journey(&home, &["new", "Inline"]);
+    journey(&home, &["new", "Edited"]);
+    let journeys = home.join("journeys");
+    let current = fs::read_to_string(journeys.join("pointer/AGENTS.md")).unwrap();
+
+    let legacy_pointer = format!(
+        "# AGENTS.md\n\n@{}\n\nRead the shared Journey guidance first, then read `journey.yaml` in this directory to understand this effort.\n",
+        "/old/home/.journey/JOURNEY-AGENTS.md"
+    );
+    fs::write(journeys.join("pointer/AGENTS.md"), &legacy_pointer).unwrap();
+    fs::write(
+        journeys.join("inline/AGENTS.md"),
+        include_str!("../src/legacy/agents-2.md"),
+    )
+    .unwrap();
+    fs::remove_file(journeys.join("inline/CLAUDE.md")).unwrap();
+    let edited = format!("{legacy_pointer}\nMy own notes.\n");
+    fs::write(journeys.join("edited/AGENTS.md"), &edited).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        include_str!("../src/legacy/config-5.toml"),
+    )
+    .unwrap();
+
+    let doctor = journey(&home, &["doctor"]);
+    assert!(doctor.contains("4 migration steps pending"));
+    assert!(!doctor.contains("--repair"));
+
+    let dry_run = journey(&home, &["migrate", "--dry-run"]);
+    assert_eq!(dry_run.matches("would ").count(), 4);
+    assert_eq!(
+        fs::read_to_string(journeys.join("pointer/AGENTS.md")).unwrap(),
+        legacy_pointer
+    );
+    assert!(home.join("config.toml").exists());
+
+    let migrated = journey(&home, &["migrate"]);
+    assert!(migrated.contains("updated: "));
+    assert!(migrated.contains("created: "));
+    assert!(migrated.contains("removed: "));
+    for id in ["pointer", "inline"] {
+        assert_eq!(
+            fs::read_to_string(journeys.join(id).join("AGENTS.md")).unwrap(),
+            current
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(journeys.join("inline/CLAUDE.md")).unwrap(),
+        "@AGENTS.md\n"
+    );
+    assert_eq!(
+        fs::read_to_string(journeys.join("edited/AGENTS.md")).unwrap(),
+        edited
+    );
+    assert!(!home.join("config.toml").exists());
+
+    assert_eq!(journey(&home, &["migrate"]).trim(), "nothing to migrate");
+    assert!(journey(&home, &["doctor"]).starts_with("doctor: ok"));
+
+    fs::write(home.join("config.toml"), "[shortcuts]\npause = \"z\"\n").unwrap();
+    let kept = journey(&home, &["migrate"]);
+    assert!(kept.contains("nothing to migrate"));
+    assert!(kept.contains("note: ") && kept.contains("has your edits and is kept"));
+    assert!(home.join("config.toml").exists());
+}

@@ -1,4 +1,5 @@
 mod links;
+mod migrate;
 mod report;
 mod worktree;
 
@@ -79,6 +80,7 @@ pub fn run(cli: Cli) -> Result<String> {
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
         Some(Commands::Readme { command }) => readme_command(&home, &cwd, command),
         Some(Commands::Doctor { repair }) => doctor(&home, repair),
+        Some(Commands::Migrate { dry_run }) => migrate::migrate(&home, dry_run),
         Some(Commands::Pause(args)) => {
             set_status(&home, &cwd, args.id.as_deref(), JourneyStatus::Paused)
         }
@@ -386,6 +388,14 @@ fn doctor(home: &Path, repair: bool) -> Result<String> {
         }
     }
 
+    let index_issues = !issues.is_empty();
+    let pending = migrate::pending(home)?;
+    if pending > 0 {
+        issues.push(format!(
+            "{pending} migration steps pending from an earlier Journey version; run `journey migrate`"
+        ));
+    }
+
     if issues.is_empty() {
         Ok(format!(
             "doctor: ok ({} worktree attachments)",
@@ -396,7 +406,9 @@ fn doctor(home: &Path, repair: bool) -> Result<String> {
         for issue in issues {
             out.push_str(&format!("- {issue}\n"));
         }
-        out.push_str("run `journey doctor --repair` to rebuild the worktree index\n");
+        if index_issues {
+            out.push_str("run `journey doctor --repair` to rebuild the worktree index\n");
+        }
         Ok(out.trim_end().to_string())
     }
 }

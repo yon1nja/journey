@@ -17,6 +17,7 @@ Journey is not a task manager, a workspace, or a replacement for git. It provide
 
 - [Philosophy](#philosophy)
 - [Installation](#installation)
+  - [Upgrading from v0.2](#upgrading-from-v02)
 - [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
 - [Using Journey](#using-journey)
@@ -60,6 +61,30 @@ brew install journey
 ```sh
 cargo install --path .
 ```
+
+### Upgrading from v0.2
+
+v0.3.0 removes the interactive TUI. Journey data needs no conversion, and older journeys keep working. After upgrading, run:
+
+```sh
+journey migrate --dry-run   # see what would change
+journey migrate             # apply it
+journey skills install      # optional: install the agent skills
+```
+
+`journey migrate` only touches files Journey generated itself and that you never edited:
+
+- Each journey's `AGENTS.md` that is still an old default is replaced with the current pointer to the agent guide. Older defaults inlined guidance that is now wrong, such as references to the TUI.
+- Journeys created before `CLAUDE.md` existed get one.
+- `~/.journey/config.toml` held TUI shortcuts and is removed if it is still a default. If you edited it, it is kept and reported; Journey no longer reads it.
+
+Anything you edited is left alone. Running it again is safe. `journey doctor` reports when migration steps are pending.
+
+Other changes that may affect scripts:
+
+- `journey` with no subcommand prints an overview and the active journeys instead of opening the TUI.
+- `journey list` prints plain text by default. `--non-interactive` is still accepted and does nothing.
+- `journey list` rows gain a fifth column, `kind`.
 
 ### Development
 
@@ -314,7 +339,15 @@ Create or print the path to the Journey's `README.md`.
 journey doctor [--repair]
 ```
 
-Checks `worktree-index.yaml` for consistency. With `--repair`, rebuilds the worktree index from active and paused Journeys.
+Checks `worktree-index.yaml` for consistency and reports pending migration steps. With `--repair`, rebuilds the worktree index from active and paused Journeys.
+
+### `journey migrate`
+
+```sh
+journey migrate [--dry-run]
+```
+
+Upgrades state left by an earlier Journey version. See [Upgrading from v0.2](#upgrading-from-v02).
 
 ## Contributing
 

@@ -82,6 +82,7 @@ Keep this behavior when adding commands that operate on an existing Journey.
 - `src/app/worktree.rs`: creating, linking, unlinking and removing worktrees.
 - `src/app/report.rs`: read-only views (`new`, `list`, `status`, `doc list`) as text or JSON.
 - `src/app/links.rs`: relations between Journeys, promotion, side-quest outcomes.
+- `src/app/migrate.rs` and `src/legacy/`: `journey migrate`. `src/legacy/` holds byte-exact defaults earlier versions wrote; migration only replaces or removes files that still match one. When a release changes a generated default, add the old one there.
 - `src/guide.md`: the agent guide, embedded in the binary.
 - `src/agent_skills.rs` and `src/skills/`: agent skills embedded in the binary and installed by `journey skills install`. Keep them short; they defer to the guide.
 - `src/storage.rs`: files, indexes, context resolution, symlinks, atomic writes, shared agent guidance.

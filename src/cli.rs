@@ -79,6 +79,12 @@ pub enum Commands {
         #[arg(long)]
         repair: bool,
     },
+    /// Upgrade state left by an earlier Journey version. Safe to run again.
+    Migrate {
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Mark a Journey paused.
     Pause(ContextIdArgs),
     /// Mark a Journey archived.
