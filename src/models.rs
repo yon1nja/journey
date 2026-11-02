@@ -11,8 +11,16 @@ use serde::{Deserialize, Serialize};
 pub enum JourneyStatus {
     Active,
     Paused,
+    Done,
     Archived,
     Abandoned,
+}
+
+impl JourneyStatus {
+    /// Open Journeys may own worktrees; closed ones release them.
+    pub fn is_open(self) -> bool {
+        matches!(self, JourneyStatus::Active | JourneyStatus::Paused)
+    }
 }
 
 impl fmt::Display for JourneyStatus {
@@ -20,6 +28,7 @@ impl fmt::Display for JourneyStatus {
         let value = match self {
             JourneyStatus::Active => "active",
             JourneyStatus::Paused => "paused",
+            JourneyStatus::Done => "done",
             JourneyStatus::Archived => "archived",
             JourneyStatus::Abandoned => "abandoned",
         };
@@ -34,10 +43,35 @@ impl FromStr for JourneyStatus {
         match value {
             "active" => Ok(JourneyStatus::Active),
             "paused" => Ok(JourneyStatus::Paused),
+            "done" => Ok(JourneyStatus::Done),
             "archived" => Ok(JourneyStatus::Archived),
             "abandoned" => Ok(JourneyStatus::Abandoned),
             other => Err(format!("unknown journey status: {other}")),
         }
+    }
+}
+
+/// A side-quest is a short-lived kind of Journey. Promoting one only changes its kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JourneyKind {
+    #[default]
+    Journey,
+    SideQuest,
+}
+
+impl JourneyKind {
+    pub fn is_journey(&self) -> bool {
+        *self == JourneyKind::Journey
+    }
+}
+
+impl fmt::Display for JourneyKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            JourneyKind::Journey => "journey",
+            JourneyKind::SideQuest => "side-quest",
+        })
     }
 }
 
@@ -54,9 +88,13 @@ pub struct IndexEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub status: JourneyStatus,
+    #[serde(default, skip_serializing_if = "JourneyKind::is_journey")]
+    pub kind: JourneyKind,
     pub updated: String,
     #[serde(default)]
     pub repos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -79,8 +117,15 @@ pub struct JourneyFile {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "JourneyKind::is_journey")]
+    pub kind: JourneyKind,
     pub status: JourneyStatus,
     pub created: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// Ids of related Journeys. Links are stored by id, never by path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
     #[serde(default)]
     pub repos: Vec<RepoRef>,
 }
@@ -120,6 +165,16 @@ pub enum EventKind {
     StatusChange {
         status: JourneyStatus,
     },
+    Close {
+        outcome: String,
+    },
+    Relate {
+        journey: String,
+    },
+    Unrelate {
+        journey: String,
+    },
+    Promote,
     #[serde(other)]
     Legacy,
 }

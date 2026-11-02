@@ -4,39 +4,29 @@ This file gives coding agents the current project context for Journey.
 
 ## Product Shape
 
-Journey is a local context container for engineering efforts. It is intentionally minimalist:
+Journey is durable, file-based memory for engineering work, operated by agents on the user's behalf. The full philosophy is in `docs/philosophy.md`; read it before changing the product surface.
 
-- It stores effort metadata, a short description, linked live worktrees, human-authored docs, scratch files, and lifecycle status.
-- It does not manage tasks, decisions, questions, next actions, generated handoff files, checkpoints, or internal code versions.
-- Git remains responsible for version control. Journey shells out to the `git` CLI where git behavior is needed.
+In short:
 
-The core invariant is that Journey owns the local container and indexes, not the user's workflow.
-
-## Current User Experience
-
-- `journey` with no subcommand opens the interactive terminal app when stdout is a terminal, or prints the active Journey list in non-interactive contexts.
-- `journey new <title> --description <text>` creates a Journey without interactive UI and is the right path for scripts and agents.
-- `journey list` opens the same interactive terminal app in interactive terminals.
-- `journey list --non-interactive` prints table output for scripts and agents.
-- `journey status [<id>]` prints a compact summary.
-- `journey readme new/path` manage the optional user-owned Journey README.
-- `journey doc new/list/path` are convenience helpers for user-owned Markdown files under `docs/`.
-- `journey capture` appends timestamped notes to Journey-local Markdown docs.
-- `journey link` and `journey unlink` attach and detach live git worktrees by reference.
-- `journey resume`, `pause`, `archive`, and `abandon` are lifecycle status changes only.
-- `journey doctor [--repair]` inspects or rebuilds worktree attachment indexes.
+- Agents are the primary users. The CLI is the interface, and every capability must work non-interactively.
+- Journey is memory, not a workspace. It does not host terminals, sessions, or agents.
+- Journey is self-explaining. Agents learn what it is and when to use it from the tool itself.
+- Journey is unopinionated about what goes inside a journey. It does not prescribe document structure, workflow, or where state is kept, and different journeys may be run in completely different ways.
+- Journey provides the container, the links between containers, and the lifecycle. Nothing more.
 
 ## Important Invariants
 
-- Do not reintroduce checkpoints, snapshots, git stash workflows, dirty-state capture, restore/apply commands, or internal version management.
-- Do not reintroduce `NOW.md` or generated projection files.
-- Do not reintroduce `ask`, `decide`, `resolve`, `next`, `note`, or structured narrative workflow commands.
-- Docs and specs belong to the user. Journey may create `docs/<name>.md`, but it must not overwrite user docs or prescribe their contents beyond the initial heading.
+- Do not reintroduce checkpoints, snapshots, git stash workflows, dirty-state capture, restore/apply commands, or internal version management. Git owns code.
+- Journey does not generate content inside a journey beyond initial scaffolding, and it never overwrites user content. `docs/`, `README.md` and per-journey `AGENTS.md` belong to the user.
+- Anything users or agents write inside a journey, including status notes, task files and handoff docs, is legitimate content. Journey neither manages nor forbids it.
+- Journey does not track tasks and has no structured narrative commands (`ask`, `decide`, `next`, and so on).
 - Worktrees are referenced, not owned. The `worktrees/` directory contains symlinks as a convenience view only.
+- Side-quests are a kind of Journey in the same store. They are never nested inside another journey. The only time Journey writes into a journey's content is appending a closed side-quest's outcome under `## Side-quests` in a related journey's README.
 - A canonical worktree path can be attached to only one active or paused Journey at a time.
-- Archived and abandoned Journeys release worktree ownership. Active and paused Journeys may own worktrees.
+- Journeys that are no longer open release worktree ownership. Active and paused Journeys may own worktrees.
 - Lifecycle commands do not modify code state.
-- Context resolution should work from a Journey folder or from inside an attached worktree.
+- A journey's folder path is stable. Do not move journey folders on status or kind changes; agent sessions and docs refer to journeys by path.
+- Context resolution must work from a Journey folder or from inside an attached worktree.
 
 ## Data Model
 
@@ -44,6 +34,7 @@ Default state root is `~/.journey`; tests and agents can set `JOURNEY_HOME`.
 
 ```text
 ~/.journey/
+|-- JOURNEY-AGENTS.md
 |-- index.yaml
 |-- worktree-index.yaml
 `-- journeys/
@@ -59,12 +50,13 @@ Default state root is `~/.journey`; tests and agents can set `JOURNEY_HOME`.
 
 Key files:
 
-- `journey.yaml`: id, title, optional description, status, created timestamp, linked repos.
-- `index.yaml`: global registry used by list/discovery.
+- `journey.yaml`: id, title, optional description, kind (`side-quest` when not a plain journey), status, created timestamp, outcome once done, links to other Journeys by id, linked repos.
+- `index.yaml`: global registry used by list and discovery.
 - `worktree-index.yaml`: canonical worktree path to owning Journey id and repo name.
-- `journal.jsonl`: operational events only. Current produced events are `link_repo`, `unlink_repo`, and `status_change`.
-- `AGENTS.md`: generated instructions for agents working inside a Journey.
-- `CLAUDE.md`: generated reference to `AGENTS.md`.
+- `journal.jsonl`: operational events only (`link_repo`, `unlink_repo`, `status_change`, `close`, `relate`, `unrelate`, `promote`).
+- `JOURNEY-AGENTS.md`: shared agent guidance, owned by Journey.
+- `AGENTS.md`: per-journey pointer to the shared guidance; user-owned after creation.
+- `CLAUDE.md`: reference to `AGENTS.md`.
 - `README.md`: optional user-owned Journey overview.
 
 Environment variables:
@@ -83,38 +75,30 @@ Commands requiring a Journey should resolve context in this order:
 
 Keep this behavior when adding commands that operate on an existing Journey.
 
-## UI Direction
-
-The terminal UI should stay aligned with the current app style:
-
-- cyan active labels
-- dim metadata labels
-- green success state
-- Journey list, details, and action panes
-- dialogs for multi-step actions
-- footer help text and notices
-
 ## Code Map
 
 - `src/cli.rs`: clap command definitions.
-- `src/app.rs`: command dispatch and core command behavior.
-- `src/storage.rs`: files, indexes, context resolution, symlinks, atomic writes.
+- `src/app/mod.rs`: command dispatch and core command behavior.
+- `src/app/worktree.rs`: creating, linking, unlinking and removing worktrees.
+- `src/app/report.rs`: read-only views (`new`, `list`, `status`, `doc list`) as text or JSON.
+- `src/app/links.rs`: relations between Journeys, promotion, side-quest outcomes.
+- `src/app/migrate.rs` and `src/legacy/`: `journey migrate`. `src/legacy/` holds byte-exact defaults earlier versions wrote; migration only replaces or removes files that still match one. When a release changes a generated default, add the old one there.
+- `src/guide.md`: the agent guide, embedded in the binary.
+- `src/agent_skills.rs` and `src/skills/`: agent skills embedded in the binary and installed by `journey skills install`. Keep them short; they defer to the guide.
+- `src/storage.rs`: files, indexes, context resolution, symlinks, atomic writes, shared agent guidance.
 - `src/models.rs`: serialized data structures.
 - `src/events.rs`: journal read/write and timestamps.
 - `src/git.rs`: git CLI wrapper and worktree creation.
-- `src/tui.rs`: interactive terminal app.
-- `src/config.rs`: interactive action ordering and shortcut configuration.
 - `tests/cli_flow.rs`: end-to-end CLI behavior.
 
 ## Development Notes
 
 - Prefer existing patterns and keep the surface small.
-- Use `apply_patch` for manual edits.
-- Use `rg` for searching.
+- Every new capability needs a non-interactive CLI path and output an agent can rely on.
 - Be careful with dirty worktrees. Do not revert unrelated changes.
 - Avoid destructive git commands unless explicitly requested.
 - Use conventional commit messages for commits.
-- If adding dependencies, justify why the existing standard library, `clap`, `ratatui`, `crossterm`, and git CLI are not enough.
+- If adding dependencies, justify why the standard library, `clap`, `serde` and the git CLI are not enough.
 
 ## Verification
 
@@ -134,4 +118,4 @@ cargo run -- list --help
 cargo run -- doc --help
 ```
 
-For interactive UI changes, use a pseudo-terminal smoke test with a temporary `JOURNEY_HOME` so the real user state is not modified.
+Always test against a temporary `JOURNEY_HOME` so the real user state is not modified.

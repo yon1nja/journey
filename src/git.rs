@@ -16,36 +16,45 @@ pub fn discover_repo(path: &Path) -> Result<DiscoveredRepo> {
     Ok(DiscoveredRepo { root, branch })
 }
 
+/// Adds a worktree for `branch`. A new branch starts at `start_point`, or HEAD when unset.
 pub fn create_worktree(
     root: &Path,
     worktree: &Path,
     branch: &str,
     create_branch: bool,
+    start_point: Option<&str>,
 ) -> Result<()> {
     let worktree_arg = worktree.to_str().ok_or_else(|| {
         anyhow::anyhow!("worktree path is not valid UTF-8: {}", worktree.display())
     })?;
     if create_branch {
-        run_git(root, &["worktree", "add", "-b", branch, worktree_arg]).map(|_| ())
+        let mut args = vec!["worktree", "add", "-b", branch, worktree_arg];
+        args.extend(start_point);
+        run_git(root, &args).map(|_| ())
     } else {
         run_git(root, &["worktree", "add", worktree_arg, branch]).map(|_| ())
     }
 }
 
-pub fn list_branches(root: &Path) -> Result<Vec<String>> {
-    let output = run_git(root, &["branch", "--format=%(refname:short)"])?;
-    let mut branches = output
+pub fn branch_exists(root: &Path, branch: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .with_context(|| format!("failed to run git in {}", root.display()))?;
+    Ok(output.status.success())
+}
+
+/// The repository's main working tree, even when `root` is a linked worktree.
+pub fn main_worktree(root: &Path) -> Result<PathBuf> {
+    let output = run_git(root, &["worktree", "list", "--porcelain"])?;
+    output
         .lines()
-        .map(str::trim)
-        .filter(|branch| !branch.is_empty())
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    branches.sort();
-    branches.dedup();
-    if branches.is_empty() {
-        bail!("no local branches found");
-    }
-    Ok(branches)
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("git worktree list did not report any worktrees"))
 }
 
 pub fn worktree_for_branch(root: &Path, branch: &str) -> Result<Option<PathBuf>> {
@@ -168,7 +177,7 @@ mod tests {
         let worktree = temp.path().join("feature-worktree");
         init_repo(&repo);
         git_command(&repo, &["branch", "feature"]);
-        create_worktree(&repo, &worktree, "feature", false).unwrap();
+        create_worktree(&repo, &worktree, "feature", false, None).unwrap();
 
         let existing = worktree_for_branch(&repo, "feature").unwrap();
 

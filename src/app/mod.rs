@@ -1,3 +1,6 @@
+mod links;
+mod migrate;
+mod report;
 mod worktree;
 
 use std::env;
@@ -7,22 +10,44 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::cli::{join_words, Cli, Commands, DocCommands, ReadmeCommands};
+use crate::agent_skills;
+use crate::cli::{
+    join_words, Cli, Commands, DocCommands, ReadmeCommands, SkillsCommands, WorktreeCommands,
+};
 use crate::events;
 use crate::git;
-use crate::models::{EventKind, IndexEntry, JourneyStatus, RepoRef};
+use crate::models::{EventKind, IndexEntry, JourneyKind, JourneyStatus, RepoRef};
 use crate::storage::{self, JourneyContext};
-use crate::tui;
-
-pub(crate) const DEFAULT_CAPTURE_DOC: &str = "capture";
+use report::ListFilter;
 
 pub fn run(cli: Cli) -> Result<String> {
     let home = storage::journey_home()?;
     let cwd = env::current_dir().context("failed to read current directory")?;
 
     match cli.command {
-        None => list_journeys(&home, &cwd, JourneyStatus::Active, false),
-        Some(Commands::New(args)) => new_journey(&home, &join_words(&args.text), args.description),
+        None => overview(&home),
+        Some(Commands::Guide) => Ok(storage::GUIDE.trim_end().to_string()),
+        Some(Commands::New(args)) => report::new_journey(
+            &home,
+            storage::NewJourney {
+                title: &join_words(&args.text),
+                description: clean_optional(args.description),
+                kind: if args.side_quest {
+                    JourneyKind::SideQuest
+                } else {
+                    JourneyKind::Journey
+                },
+                links: args.linked_to,
+            },
+            args.json,
+        ),
+        Some(Commands::Relate { other, journey }) => {
+            links::relate(&home, &cwd, journey.as_deref(), &other)
+        }
+        Some(Commands::Unrelate { other, journey }) => {
+            links::unrelate(&home, &cwd, journey.as_deref(), &other)
+        }
+        Some(Commands::Promote(args)) => links::promote(&home, &cwd, args.id.as_deref()),
         Some(Commands::Capture(args)) => {
             let text = read_capture_input(&args.text)?;
             capture(&home, &cwd, args.journey.as_deref(), &args.doc, &text)
@@ -38,17 +63,24 @@ pub fn run(cli: Cli) -> Result<String> {
         Some(Commands::Resume(args)) => resume(&home, &cwd, args.id.as_deref()),
         Some(Commands::List {
             status,
-            non_interactive,
-        }) => list_journeys(
+            all,
+            search,
+            json,
+            non_interactive: _,
+        }) => report::list_journeys(
             &home,
-            &cwd,
-            status.unwrap_or(JourneyStatus::Active),
-            non_interactive,
+            &ListFilter {
+                status,
+                all,
+                search: search.as_deref(),
+            },
+            json,
         ),
-        Some(Commands::Status { id }) => status(&home, &cwd, id.as_deref()),
+        Some(Commands::Status { id, json }) => report::status(&home, &cwd, id.as_deref(), json),
         Some(Commands::Doc { command }) => doc_command(&home, &cwd, command),
         Some(Commands::Readme { command }) => readme_command(&home, &cwd, command),
         Some(Commands::Doctor { repair }) => doctor(&home, repair),
+        Some(Commands::Migrate { dry_run }) => migrate::migrate(&home, dry_run),
         Some(Commands::Pause(args)) => {
             set_status(&home, &cwd, args.id.as_deref(), JourneyStatus::Paused)
         }
@@ -58,20 +90,22 @@ pub fn run(cli: Cli) -> Result<String> {
         Some(Commands::Abandon(args)) => {
             set_status(&home, &cwd, args.id.as_deref(), JourneyStatus::Abandoned)
         }
+        Some(Commands::Close(args)) => close(
+            &home,
+            &cwd,
+            args.id.as_deref(),
+            &args.outcome,
+            args.remove_worktrees,
+        ),
+        Some(Commands::Worktree { command }) => worktree_command(&home, &cwd, command),
+        Some(Commands::Skills { command }) => match command {
+            SkillsCommands::Install { dir } => agent_skills::install(dir.as_deref()),
+            SkillsCommands::Remove { dir } => agent_skills::remove(dir.as_deref()),
+        },
     }
 }
 
-pub(crate) fn new_journey(home: &Path, title: &str, description: Option<String>) -> Result<String> {
-    let now = events::now_rfc3339()?;
-    let ctx = storage::create_journey(home, title, clean_optional(description), &now)?;
-    Ok(format!(
-        "created Journey `{}` at {}",
-        ctx.journey.id,
-        ctx.path.display()
-    ))
-}
-
-fn clean_optional(value: Option<String>) -> Option<String> {
+pub(crate) fn clean_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -134,98 +168,108 @@ fn doc_title(path: &Path) -> String {
         .unwrap_or_else(|| "doc".to_string())
 }
 
-fn list_journeys(
+const OVERVIEW: &str = "Journey: durable memory for engineering work, operated by agents.\nAgents: run `journey guide` to learn how to use it. Run `journey --help` for all commands.";
+
+fn overview(home: &Path) -> Result<String> {
+    let filter = ListFilter {
+        status: None,
+        all: false,
+        search: None,
+    };
+    let list = report::list_journeys(home, &filter, false)?;
+    Ok(format!("{OVERVIEW}\n\nActive Journeys:\n{list}"))
+}
+
+pub(crate) fn close(
     home: &Path,
     cwd: &Path,
-    default_filter: JourneyStatus,
-    non_interactive: bool,
+    id: Option<&str>,
+    outcome: &str,
+    remove_worktrees: bool,
 ) -> Result<String> {
-    storage::ensure_home(home)?;
-    let index = storage::load_index(home)?;
-    let mut rows = index.journeys.into_iter().collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
-
-    if !non_interactive && io::stdout().is_terminal() {
-        return Ok(tui::run_journey_app(home, cwd, default_filter)?.unwrap_or_default());
+    let outcome = outcome.trim();
+    if outcome.is_empty() {
+        bail!("outcome cannot be empty");
     }
-
-    if rows.is_empty() {
-        return Ok("no Journeys".to_string());
-    }
-
-    let rows = rows
-        .into_iter()
-        .filter(|entry| entry.status == default_filter)
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
-        return Ok(format!("no {default_filter} Journeys"));
-    }
-
-    render_journey_table(&rows)
-}
-
-fn render_journey_table(rows: &[IndexEntry]) -> Result<String> {
-    let mut out = String::new();
-    for entry in rows {
-        let repos = if entry.repos.is_empty() {
-            "no repos".to_string()
-        } else {
-            entry.repos.join(", ")
-        };
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\n",
-            entry.id, entry.status, entry.updated, repos
-        ));
-    }
-    Ok(out.trim_end().to_string())
-}
-
-pub(crate) fn status(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> {
-    let ctx = storage::resolve_context(home, id, cwd)?;
-    let events = events::read_events(&ctx.path)?;
-
-    let mut out = String::new();
-    out.push_str(&format!("{}\n", ctx.journey.title));
-    if let Some(description) = &ctx.journey.description {
-        out.push_str(&format!("description: {description}\n"));
-    }
-    out.push_str(&format!("id: {}\n", ctx.journey.id));
-    out.push_str(&format!("status: {}\n", ctx.journey.status));
-    out.push_str(&format!("path: {}\n", ctx.path.display()));
-    out.push_str(&format!("repos: {}\n", ctx.journey.repos.len()));
-    out.push_str(&format!("events: {}\n", events.len()));
-    Ok(out.trim_end().to_string())
-}
-
-pub(crate) fn done(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> {
     let mut ctx = storage::resolve_context(home, id, cwd)?;
-    let repos = ctx.journey.repos.clone();
-    for repo in &repos {
-        git::ensure_worktree_removable(&repo.root, &repo.worktree)?;
+    if ctx.journey.status == JourneyStatus::Done {
+        bail!(
+            "Journey `{}` is already done; resume it first to close it again",
+            ctx.journey.id
+        );
     }
 
     let mut removed = 0;
-    for repo in &repos {
-        git::remove_worktree(&repo.root, &repo.worktree)?;
-        storage::remove_worktree_link(&ctx.path, &repo.name)?;
-        removed += 1;
+    if remove_worktrees {
+        for repo in &ctx.journey.repos {
+            git::ensure_worktree_removable(&repo.root, &repo.worktree)?;
+        }
+        for repo in &ctx.journey.repos {
+            git::remove_worktree(&repo.root, &repo.worktree)?;
+            storage::remove_worktree_link(&ctx.path, &repo.name)?;
+            removed += 1;
+        }
     }
 
-    ctx.journey.status = JourneyStatus::Archived;
+    ctx.journey.status = JourneyStatus::Done;
+    ctx.journey.outcome = Some(outcome.to_string());
     storage::save_journey(&ctx.path, &ctx.journey)?;
-    storage::detach_journey_worktrees(home, &ctx.journey.id)?;
+    let detached = storage::detach_journey_worktrees(home, &ctx.journey.id)?;
     let record = events::append_event(
         &ctx.path,
-        EventKind::StatusChange {
-            status: JourneyStatus::Archived,
+        EventKind::Close {
+            outcome: outcome.to_string(),
         },
     )?;
-    finish_mutation(&ctx, Some(record.ts))?;
+    finish_mutation(&ctx, Some(record.ts.clone()))?;
 
-    Ok(format!(
-        "Journey `{}` is done: archived and removed {} worktrees",
-        ctx.journey.id, removed
-    ))
+    let mut message = if remove_worktrees {
+        format!(
+            "Journey `{}` is done (removed {removed} worktrees)",
+            ctx.journey.id
+        )
+    } else {
+        format!(
+            "Journey `{}` is done (detached {detached} worktrees)",
+            ctx.journey.id
+        )
+    };
+    if ctx.journey.kind == JourneyKind::SideQuest {
+        let updated = links::record_side_quest_outcome(home, &ctx, outcome, &record.ts)?;
+        for id in updated {
+            message.push_str(&format!(
+                "\nrecorded outcome in the README of Journey `{id}`"
+            ));
+        }
+    }
+    Ok(message)
+}
+
+fn worktree_command(home: &Path, cwd: &Path, command: WorktreeCommands) -> Result<String> {
+    match command {
+        WorktreeCommands::New {
+            branch,
+            from,
+            repo,
+            path,
+            name,
+            journey,
+        } => create_worktree(
+            home,
+            cwd,
+            journey.as_deref(),
+            &WorktreeRequest {
+                repo: repo.as_deref(),
+                branch: &branch,
+                from: from.as_deref(),
+                path: path.as_deref(),
+                name,
+            },
+        ),
+        WorktreeCommands::Remove { name, journey } => {
+            delete_worktree(home, cwd, journey.as_deref(), &name)
+        }
+    }
 }
 
 pub(crate) fn resume(home: &Path, cwd: &Path, id: Option<&str>) -> Result<String> {
@@ -250,30 +294,8 @@ fn doc_command(home: &Path, cwd: &Path, command: DocCommands) -> Result<String> 
             storage::update_index_entry(home, &ctx.journey, &now)?;
             Ok(path.display().to_string())
         }
-        DocCommands::List { journey } => {
-            let ctx = storage::resolve_context(home, journey.as_deref(), cwd)?;
-            let docs_dir = ctx.path.join(storage::DOCS_DIR);
-            if !docs_dir.exists() {
-                return Ok("no docs".to_string());
-            }
-            let mut docs = fs::read_dir(&docs_dir)?
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    if path.is_file() {
-                        path.file_name()
-                            .map(|name| name.to_string_lossy().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            docs.sort();
-            if docs.is_empty() {
-                Ok("no docs".to_string())
-            } else {
-                Ok(docs.join("\n"))
-            }
+        DocCommands::List { journey, json } => {
+            report::list_docs(home, cwd, journey.as_deref(), json)
         }
         DocCommands::Path { name, journey } => {
             let ctx = storage::resolve_context(home, journey.as_deref(), cwd)?;
@@ -366,6 +388,14 @@ fn doctor(home: &Path, repair: bool) -> Result<String> {
         }
     }
 
+    let index_issues = !issues.is_empty();
+    let pending = migrate::pending(home)?;
+    if pending > 0 {
+        issues.push(format!(
+            "{pending} migration steps pending from an earlier Journey version; run `journey migrate`"
+        ));
+    }
+
     if issues.is_empty() {
         Ok(format!(
             "doctor: ok ({} worktree attachments)",
@@ -376,7 +406,9 @@ fn doctor(home: &Path, repair: bool) -> Result<String> {
         for issue in issues {
             out.push_str(&format!("- {issue}\n"));
         }
-        out.push_str("run `journey doctor --repair` to rebuild the worktree index\n");
+        if index_issues {
+            out.push_str("run `journey doctor --repair` to rebuild the worktree index\n");
+        }
         Ok(out.trim_end().to_string())
     }
 }
@@ -390,18 +422,17 @@ pub(crate) fn set_status(
     let mut ctx = storage::resolve_context(home, id, cwd)?;
     let previous_status = ctx.journey.status;
     let now = events::now_rfc3339()?;
-    let attached = if matches!(status, JourneyStatus::Active | JourneyStatus::Paused)
-        && matches!(
-            previous_status,
-            JourneyStatus::Archived | JourneyStatus::Abandoned
-        ) {
+    let attached = if status.is_open() && !previous_status.is_open() {
         storage::attach_journey_worktrees(home, &ctx.journey, &now)?
     } else {
         0
     };
     ctx.journey.status = status;
+    if status.is_open() {
+        ctx.journey.outcome = None;
+    }
     storage::save_journey(&ctx.path, &ctx.journey)?;
-    let detached = if matches!(status, JourneyStatus::Archived | JourneyStatus::Abandoned) {
+    let detached = if !status.is_open() {
         storage::detach_journey_worktrees(home, &ctx.journey.id)?
     } else {
         0
@@ -442,4 +473,6 @@ fn validate_name(name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-pub(crate) use worktree::{delete_worktree, link_repo, unlink_repo};
+pub(crate) use worktree::{
+    create_worktree, delete_worktree, link_repo, unlink_repo, WorktreeRequest,
+};
