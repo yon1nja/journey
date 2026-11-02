@@ -1,14 +1,12 @@
 # Journey
 
-**Context persistence for engineering efforts.**
+**Durable memory for engineering work, operated by your agents.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Journey gives each engineering effort a durable folder on disk with metadata, a short description, linked git worktrees, effort-local docs, and lifecycle status. It is intentionally not a task manager, checkpoint system, agent orchestrator, or replacement for git — it preserves context around the work while leaving notes, plans, decisions, and version control to the tools you already use.
+Agent sessions are short-lived; engineering work is not. Journey gives each effort a durable folder on disk — what it is, why it exists, its linked git worktrees, its docs, and its lifecycle — so any agent, in any session, can pick the work up and continue it. You tell your agent "start a journey about X" or "open a journey for this and record everything"; the agent does the rest.
 
-<p align="center">
-  <img src="demo.gif" alt="Journey interactive TUI demo" width="800">
-</p>
+Journey is not a task manager, a workspace, or a replacement for git. It provides the container and stays out of what goes inside.
 
 > [!NOTE]
 > Journey is under active development and may contain bugs, rough edges, or behavior that changes between releases. Issue reports and feedback are very welcome.
@@ -19,16 +17,13 @@ Journey gives each engineering effort a durable folder on disk with metadata, a 
 
 - [Philosophy](#philosophy)
 - [Installation](#installation)
+  - [Upgrading from v0.2](#upgrading-from-v02)
 - [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
 - [Using Journey](#using-journey)
-  - [Interactive Interface](#interactive-interface)
   - [Context Resolution](#context-resolution)
 - [Journey Lifecycle](#journey-lifecycle)
 - [Commands](#commands)
-- [Interactive Actions](#interactive-actions)
-- [Configuration](#configuration)
-- [Upcoming Features](#upcoming-features)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -36,9 +31,15 @@ Journey gives each engineering effort a durable folder on disk with metadata, a 
 
 ## Philosophy
 
-Journey provides the smallest durable container for an engineering effort while staying deliberately unopinionated about the workflow inside it.
+- **Agents are the primary users.** The CLI is the interface, and every capability works non-interactively.
+- **Memory, not a workspace.** Your terminal, editor, and agent are the workspace. Journey holds the context.
+- **Self-explaining.** Agents learn what Journey is and when to use it from the tool itself.
+- **Unopinionated about what goes inside.** Each journey can be run its own way. Journey prescribes no document structure or workflow.
+- **One effort, one context.** Unrelated work stays out of an effort's context.
+- **Lifecycle matches the work.** Containers end when the work ends, and closing records an outcome.
+- **Git owns code.** Worktrees are referenced, never snapshotted or owned.
 
-Each Journey answers **what** the effort is, **why** it exists, **where** its worktrees and notes live, and what **lifecycle state** it is in. Beyond that, Journey stays extensible and quiet — it does not decide how you plan, document, delegate, summarize, or reason about the work.
+The full philosophy is in [docs/philosophy.md](docs/philosophy.md).
 
 ## Installation
 
@@ -61,6 +62,30 @@ brew install journey
 cargo install --path .
 ```
 
+### Upgrading from v0.2
+
+v0.3.0 removes the interactive TUI. Journey data needs no conversion, and older journeys keep working. After upgrading, run:
+
+```sh
+journey migrate --dry-run   # see what would change
+journey migrate             # apply it
+journey skills install      # optional: install the agent skills
+```
+
+`journey migrate` only touches files Journey generated itself and that you never edited:
+
+- Each journey's `AGENTS.md` that is still an old default is replaced with the current pointer to the agent guide. Older defaults inlined guidance that is now wrong, such as references to the TUI.
+- Journeys created before `CLAUDE.md` existed get one.
+- `~/.journey/config.toml` held TUI shortcuts and is removed if it is still a default. If you edited it, it is kept and reported; Journey no longer reads it.
+
+Anything you edited is left alone. Running it again is safe. `journey doctor` reports when migration steps are pending.
+
+Other changes that may affect scripts:
+
+- `journey` with no subcommand prints an overview and the active journeys instead of opening the TUI.
+- `journey list` prints plain text by default. `--non-interactive` is still accepted and does nothing.
+- `journey list` rows gain a fifth column, `kind`.
+
 ### Development
 
 ```sh
@@ -78,6 +103,28 @@ alias jy='journey'
 ```
 
 ## Quick Start
+
+### With an agent
+
+Journey is meant to be driven by your coding agent. Install the Journey skills once, globally:
+
+```sh
+journey skills install
+```
+
+This adds three skills to Claude Code (`~/.claude/skills/`): `journey-start`, `journey-side-quest`, and `journey-resume`. They let an agent recognize when to start, side-quest, or resume a journey without you explaining Journey first. Run it again after upgrading Journey to update them.
+
+The skills defer to the guide built into the CLI:
+
+```sh
+journey guide
+```
+
+prints what Journey is, when to start a journey, how to record and resume work, and the command reference. The same guide is kept current at `~/.journey/JOURNEY-AGENTS.md`, and every journey's `AGENTS.md` points to it.
+
+Then just ask: "start a journey about the auth failures", "open a journey for this and record everything", or "continue the auth work".
+
+### By hand
 
 ```sh
 # Create a Journey
@@ -97,17 +144,19 @@ journey pause
 journey resume
 ```
 
-Or just run `journey` to open the interactive TUI.
-
 ## Core Concepts
 
 A **Journey** represents one engineering effort — an investigation, migration, review, or feature. It can span multiple repositories and multiple live git worktrees.
+
+A **side-quest** is a small, short-lived kind of Journey for work that pops up in the middle of other work, like a bug found along the way. It has its own context so it doesn't pollute the journey it came from. It can be related to a journey or stand alone, and it is never nested inside one. Closing it requires an outcome, which is also added under `## Side-quests` in the README of each related journey. A side-quest that grows can be promoted to a journey; nothing moves on disk.
+
+Journeys relate to each other by id (`journey relate`), never by folder structure.
 
 Each Journey stores:
 
 | File / Directory | Purpose |
 |---|---|
-| `journey.yaml` | ID, title, description, status, creation time, linked repos |
+| `journey.yaml` | ID, title, description, kind, status, outcome, creation time, related Journeys, linked repos |
 | `journal.jsonl` | Append-only operational log (link, unlink, status changes) |
 | `AGENTS.md` | Pointer to shared Journey agent guidance |
 | `CLAUDE.md` | Claude-specific pointer to `AGENTS.md` |
@@ -119,34 +168,11 @@ Global state under `JOURNEY_HOME`:
 
 | File | Purpose |
 |---|---|
-| `JOURNEY-AGENTS.md` | Shared coding-agent guidance for all Journeys |
-| `index.yaml` | Journey registry for list and TUI views |
+| `JOURNEY-AGENTS.md` | Agent guide, rewritten to match the installed binary |
+| `index.yaml` | Journey registry used by `list` and discovery |
 | `worktree-index.yaml` | Worktree-to-Journey ownership mapping |
-| `config.toml` | Action ordering and keyboard shortcuts |
 
 ## Using Journey
-
-### Interactive Interface
-
-Running `journey` with no arguments opens the interactive TUI. This is the most complete way to use Journey — it combines browsing, searching, details, document viewing, creation, and actions in one place.
-
-**Default keybindings:**
-
-| Key | Action |
-|---|---|
-| `a` | Enter search mode |
-| `Esc` | Back / quit |
-| `Ctrl-N` | Create a new Journey |
-| `Enter` | Open details or run action |
-| `Tab` / `Shift-Tab` | Switch document tabs |
-| `Up` / `Down` / `PgUp` / `PgDn` | Navigate or scroll |
-
-The TUI includes:
-
-- **Search** — filter by title, ID, description, status, and linked repo names
-- **Details pane** — metadata, lifecycle state, linked repos, recent events, and paths
-- **Document tabs** — read `README.md` and `docs/*.md` inline with rendered Markdown
-- **Actions pane** — configurable actions with keyboard shortcuts
 
 ### Context Resolution
 
@@ -165,27 +191,45 @@ This means `journey status`, `journey capture`, and doc commands work from insid
 |---|---|---|
 | `active` | Current or ongoing work | Yes |
 | `paused` | Not currently active, but resumable | Yes |
+| `done` | Finished, closed with an outcome | No (released) |
 | `archived` | Completed or closed, kept for reference | No (released) |
 | `abandoned` | Stopped, not expected to continue | No (released) |
 
 A canonical worktree path can belong to only one active or paused Journey at a time.
 
-When a Journey is archived or abandoned, its worktrees are detached from the global ownership index but **not deleted from disk**. The Journey folder and repo references remain intact.
+When a Journey is done, archived, or abandoned, its worktrees are detached from the global ownership index but **not deleted from disk**. The Journey folder and repo references remain intact.
 
-When an archived or abandoned Journey is resumed, Journey attempts to reattach its worktrees. Reattachment fails if a worktree is missing or already owned by another active/paused Journey.
+When a done, archived, or abandoned Journey is resumed, Journey attempts to reattach its worktrees. Reattachment fails if a worktree is missing or already owned by another active/paused Journey.
 
-Lifecycle commands never snapshot, stash, restore, or compare code — git remains responsible for code state. The one exception is the interactive `done` action, which archives the Journey and removes linked worktrees after confirmation.
+Lifecycle commands never snapshot, stash, restore, or compare code — git remains responsible for code state. The one exception is `journey close --remove-worktrees`, which removes linked worktrees from disk after checking they have no uncommitted changes.
 
 ## Commands
 
 ### `journey` (no subcommand)
 
-Opens the interactive TUI when stdout is a terminal. In non-interactive contexts, prints the active Journey list.
+Prints a short overview and the active Journey list.
+
+### `journey guide`
+
+```sh
+journey guide
+```
+
+Prints the agent guide embedded in the binary.
+
+### `journey skills`
+
+```sh
+journey skills install [--dir <path>]
+journey skills remove [--dir <path>]
+```
+
+Installs, updates, or removes the Journey agent skills. The default folder is `$CLAUDE_CONFIG_DIR/skills`, or `~/.claude/skills`.
 
 ### `journey new`
 
 ```sh
-journey new <title> [--description <text>]
+journey new <title> [--description <text>] [--side-quest] [--linked-to <id>]... [--json]
 ```
 
 Creates a Journey with `journey.yaml`, `journal.jsonl`, `AGENTS.md`, and `CLAUDE.md`.
@@ -193,10 +237,10 @@ Creates a Journey with `journey.yaml`, `journal.jsonl`, `AGENTS.md`, and `CLAUDE
 ### `journey list`
 
 ```sh
-journey list [--status active|paused|archived|abandoned] [--non-interactive]
+journey list [--status active|paused|done|archived|abandoned | --all] [--search <text>] [--json]
 ```
 
-Lists Journeys. With `--non-interactive`, prints tab-separated rows: `<id> <status> <updated> <repos>`.
+Lists Journeys with the given status (default: active) as tab-separated rows: `<id> <status> <updated> <repos> <kind>`. `--search` matches id, title, description, and repo names, case-insensitively, across every status unless `--status` is given.
 
 ### `journey status`
 
@@ -204,7 +248,11 @@ Lists Journeys. With `--non-interactive`, prints tab-separated rows: `<id> <stat
 journey status [<id>]
 ```
 
-Prints a one-screen summary: title, description, ID, status, path, repo count, and event count.
+Prints a summary: title, description, ID, status, outcome, path, README, docs, linked repos with branch and worktree, and event count.
+
+### JSON output
+
+`journey new`, `journey list`, `journey status`, and `journey doc list` accept `--json` for output agents and scripts can parse. JSON output includes each Journey's folder path.
 
 ### `journey link` / `journey unlink`
 
@@ -223,6 +271,35 @@ journey pause [<id>]
 journey archive [<id>]
 journey abandon [<id>]
 ```
+
+### `journey relate` / `journey unrelate` / `journey promote`
+
+```sh
+journey relate <id> [--journey <id>]
+journey unrelate <id> [--journey <id>]
+journey promote [<id>]
+```
+
+Relate the current Journey to another one, remove a relation, or turn a side-quest into a journey.
+
+### `journey close`
+
+```sh
+journey close [<id>] --outcome <text> [--remove-worktrees]
+```
+
+Marks a Journey `done` and records a one-line outcome in `journey.yaml` and the journal. The outcome is required. For a side-quest, the outcome is also added under `## Side-quests` in the README of each related journey. Worktree ownership is released; `--remove-worktrees` also removes the linked worktrees from disk.
+
+### `journey worktree`
+
+```sh
+journey worktree new --branch <name> [--from <start>] [--repo <path>] [--path <dir>] [--name <name>] [--journey <id>]
+journey worktree remove <name> [--journey <id>]
+```
+
+`new` creates a git worktree for a branch and links it. A missing branch is created from `--from` (default: HEAD). An existing branch that is already checked out somewhere is linked in place. The default location is `<repo>/.worktrees/<branch>`.
+
+`remove` deletes a linked worktree from disk and unlinks it. It refuses the main working tree and worktrees with uncommitted changes.
 
 ### `journey capture`
 
@@ -262,83 +339,15 @@ Create or print the path to the Journey's `README.md`.
 journey doctor [--repair]
 ```
 
-Checks `worktree-index.yaml` for consistency. With `--repair`, rebuilds the worktree index from active and paused Journeys.
+Checks `worktree-index.yaml` for consistency and reports pending migration steps. With `--repair`, rebuilds the worktree index from active and paused Journeys.
 
-## Interactive Actions
+### `journey migrate`
 
-| Action | Shortcut | Description |
-|---|---|---|
-| `open_claude` | `c` | Run `claude` in the Journey folder |
-| `open_nvim` | `n` | Run `nvim` in the Journey folder |
-| `new_branch_worktree` | `b` | Create a new branch + worktree, then link |
-| `existing_branch_worktree` | `w` | Select existing branch, create/reuse worktree, then link |
-| `link_current` | `l` | Link the current directory's git worktree |
-| `unlink_repo` | `u` | Detach a linked repo (does not delete) |
-| `capture` | `t` | Append a timestamped note |
-| `delete_worktree` | `d` | Remove a linked worktree and unlink it |
-| `done` | `f` | Archive + remove linked worktrees (with confirmation) |
-| `pause` | `p` | Mark paused |
-| `archive` | `x` | Mark archived, release worktree ownership |
-| `copy_cd` | — | Copy `cd <path>` to clipboard |
-| `resume` | — | Mark active, reattach worktrees |
-| `abandon` | — | Mark abandoned, release worktree ownership |
-
-## Configuration
-
-Journey creates `config.toml` in `JOURNEY_HOME` on first use.
-
-<details>
-<summary>Default config.toml</summary>
-
-```toml
-[actions]
-order = [
-  "open_claude",
-  "open_nvim",
-  "new_branch_worktree",
-  "existing_branch_worktree",
-  "link_current",
-  "unlink_repo",
-  "capture",
-  "delete_worktree",
-  "done",
-  "pause",
-  "archive",
-  "copy_cd",
-  "resume",
-  "abandon",
-]
-disabled = []
-
-[shortcuts]
-new_journey = "ctrl+n"
-open_claude = "c"
-open_nvim = "n"
-new_branch_worktree = "b"
-existing_branch_worktree = "w"
-link_current = "l"
-unlink_repo = "u"
-capture = "t"
-delete_worktree = "d"
-done = "f"
-pause = "p"
-archive = "x"
-copy_cd = "none"
-resume = "none"
-abandon = "none"
-insert_mode = "a"
-normal_mode = "esc"
+```sh
+journey migrate [--dry-run]
 ```
 
-</details>
-
-Shortcuts accept single keys (`c`), control keys (`ctrl+n`), `esc`, or `none` for unbound actions. Duplicate shortcuts are rejected on startup.
-
-## Upcoming Features
-
-- Richer worktree navigation (`journey worktree list`, `journey cd <name>`, `worktrees/<repo>@<branch>` naming)
-- Extended document previews and tabs
-- User-defined shell scripts as custom interactive actions
+Upgrades state left by an earlier Journey version. See [Upgrading from v0.2](#upgrading-from-v02).
 
 ## Contributing
 

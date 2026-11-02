@@ -6,8 +6,8 @@ use crate::models::JourneyStatus;
 
 #[derive(Debug, Parser)]
 #[command(name = "journey")]
-#[command(about = "Context persistence for engineering efforts")]
-#[command(after_help = "Run `journey` with no subcommand to start the interactive Journey app.")]
+#[command(about = "Durable memory for engineering work, operated by agents")]
+#[command(after_help = "Agents: run `journey guide` to learn what Journey is and how to use it.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -15,7 +15,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Create a new Journey without opening the interactive app.
+    /// Print the agent guide: what Journey is, when to use it, and how.
+    Guide,
+    /// Create a new Journey, or a side-quest with --side-quest.
     New(NewArgs),
     /// Append a quick capture to a Journey-local Markdown doc.
     Capture(CaptureArgs),
@@ -35,17 +37,32 @@ pub enum Commands {
     },
     /// Mark a Journey active.
     Resume(ContextIdArgs),
-    /// List known Journeys.
+    /// List Journeys as tab-separated rows: id, status, updated, repos, kind.
     List {
-        /// Initial status filter for the interactive UI; hard filter with --non-interactive.
-        #[arg(long)]
+        /// Only list Journeys with this status (defaults to active).
+        #[arg(long, conflicts_with = "all")]
         status: Option<JourneyStatus>,
-        /// Print table output instead of opening the interactive UI.
+        /// List Journeys of every status.
         #[arg(long)]
+        all: bool,
+        /// Only list Journeys whose id, title, description, or repo names contain this text.
+        /// Searches every status unless --status is given.
+        #[arg(long)]
+        search: Option<String>,
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Accepted for compatibility; output is always non-interactive.
+        #[arg(long, hide = true)]
         non_interactive: bool,
     },
     /// Print a one-screen Journey summary.
-    Status { id: Option<String> },
+    Status {
+        id: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage Journey-local docs.
     Doc {
         #[command(subcommand)]
@@ -62,12 +79,111 @@ pub enum Commands {
         #[arg(long)]
         repair: bool,
     },
+    /// Upgrade state left by an earlier Journey version. Safe to run again.
+    Migrate {
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Mark a Journey paused.
     Pause(ContextIdArgs),
     /// Mark a Journey archived.
     Archive(ContextIdArgs),
     /// Mark a Journey abandoned.
     Abandon(ContextIdArgs),
+    /// Close a finished Journey with an outcome and mark it done.
+    ///
+    /// Releases worktree ownership. The worktrees stay on disk unless
+    /// --remove-worktrees is passed. A side-quest's outcome is also added to
+    /// the README of every Journey it is related to.
+    Close(CloseArgs),
+    /// Relate this Journey to another one by id.
+    Relate {
+        other: String,
+        #[arg(long)]
+        journey: Option<String>,
+    },
+    /// Remove a relation to another Journey.
+    Unrelate {
+        other: String,
+        #[arg(long)]
+        journey: Option<String>,
+    },
+    /// Turn a side-quest into a journey. Files and history stay as they are.
+    Promote(ContextIdArgs),
+    /// Install or remove the Journey skills for your coding agents.
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommands,
+    },
+    /// Create, link, or remove git worktrees for a Journey.
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommands,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct CloseArgs {
+    pub id: Option<String>,
+    /// One line describing how the effort ended.
+    #[arg(long)]
+    pub outcome: String,
+    /// Also remove the linked worktrees from disk. Refuses if any has uncommitted changes.
+    #[arg(long)]
+    pub remove_worktrees: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillsCommands {
+    /// Install or update the Journey skills (journey-start, journey-side-quest,
+    /// journey-resume) globally for Claude Code.
+    Install {
+        /// Skills folder (defaults to $CLAUDE_CONFIG_DIR/skills or ~/.claude/skills).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Remove the Journey skills.
+    Remove {
+        /// Skills folder (defaults to $CLAUDE_CONFIG_DIR/skills or ~/.claude/skills).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorktreeCommands {
+    /// Create a worktree for a branch and link it to the Journey.
+    ///
+    /// Creates the branch if it does not exist. If the branch is already
+    /// checked out in a worktree, links that worktree instead.
+    New {
+        /// Branch to check out in the new worktree.
+        #[arg(long)]
+        branch: String,
+        /// Start point for a new branch (defaults to the repo's HEAD).
+        #[arg(long)]
+        from: Option<String>,
+        /// Repository to create the worktree in (defaults to the current directory).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Worktree location (defaults to <repo>/.worktrees/<branch>).
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Name to link the worktree under (defaults to the worktree folder name).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        journey: Option<String>,
+    },
+    /// Remove a linked worktree from disk and unlink it.
+    ///
+    /// Refuses to remove the main working tree or a worktree with uncommitted changes.
+    Remove {
+        name: String,
+        #[arg(long)]
+        journey: Option<String>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -76,6 +192,16 @@ pub struct NewArgs {
     pub text: Vec<String>,
     #[arg(short, long)]
     pub description: Option<String>,
+    /// Create a side-quest: a small, short-lived Journey for work that came up
+    /// along the way. Usually combined with --linked-to.
+    #[arg(long)]
+    pub side_quest: bool,
+    /// Relate the new Journey to an existing one by id. Repeatable.
+    #[arg(long = "linked-to", value_name = "ID")]
+    pub linked_to: Vec<String>,
+    /// Print the new Journey as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -105,6 +231,9 @@ pub enum DocCommands {
     List {
         #[arg(long)]
         journey: Option<String>,
+        /// Print JSON instead of one name per line.
+        #[arg(long)]
+        json: bool,
     },
     /// Print the absolute path to a Journey doc.
     Path {

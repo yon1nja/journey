@@ -1,0 +1,17 @@
+# Journey configuration.
+#
+# Shortcuts use single keys like "c", or control keys like "ctrl+n".
+[shortcuts]
+new_journey = "ctrl+n"
+open_claude = "c"
+open_nvim = "n"
+new_branch_worktree = "b"
+existing_branch_worktree = "w"
+link_current = "l"
+unlink_repo = "u"
+delete_worktree = "d"
+done = "f"
+pause = "p"
+archive = "x"
+insert_mode = "a"
+normal_mode = "esc"

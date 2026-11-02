@@ -130,7 +130,7 @@ fn full_cli_flow_links_docs_and_worktrees_without_generated_state() {
     assert!(journey_agents.contains("README.md"));
     assert!(journey_agents.contains("journey readme new"));
     assert!(journey_agents.contains("journey capture <text>"));
-    assert!(journey_agents.contains("interactive Details pane"));
+    assert!(!journey_agents.contains("interactive"));
 
     let doc_path = journey(
         &home,
@@ -209,13 +209,32 @@ fn list_non_interactive_keeps_table_output() {
 }
 
 #[test]
-fn bare_journey_shows_non_interactive_list_when_piped() {
+fn bare_journey_prints_overview_and_active_list() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
     journey(&home, &["new", "Piped", "Test"]);
 
     let output = journey(&home, &[]);
-    assert!(output.contains("piped-test"));
+    assert!(output.contains("journey --help"));
+    assert!(output.contains("piped-test\tactive\t"));
+    assert!(!home.join("config.toml").exists());
+}
+
+#[test]
+fn list_filters_by_status() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Keep", "Active"]);
+    journey(&home, &["new", "Now", "Paused"]);
+    journey(&home, &["pause", "now-paused"]);
+
+    let active = journey(&home, &["list"]);
+    assert!(active.contains("keep-active"));
+    assert!(!active.contains("now-paused"));
+
+    let paused = journey(&home, &["list", "--status", "paused"]);
+    assert!(paused.contains("now-paused"));
+    assert!(!paused.contains("keep-active"));
 }
 
 #[test]
@@ -332,7 +351,7 @@ fn resume_and_pause_are_lifecycle_status_changes() {
 fn hidden_fzf_helpers_are_not_part_of_the_cli_surface() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("journey-home");
-    journey(&home, &["new", "Ratatui", "Helper"]);
+    journey(&home, &["new", "Fzf", "Helper"]);
 
     let error = journey_fails(&home, &["__fzf-candidates", "--query", "active"]);
     assert!(error.contains("unrecognized subcommand '__fzf-candidates'"));
@@ -463,4 +482,556 @@ fn doctor_repair_rebuilds_worktree_index() {
 
     let listed = journey_in(&home, Some(&repo), &["doc", "list"]);
     assert_eq!(listed.trim(), "no docs");
+}
+
+#[test]
+fn worktree_new_creates_branch_worktree_and_links_it() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    journey(&home, &["new", "Worktree", "Flow"]);
+
+    let created = journey_in(
+        &home,
+        Some(&repo),
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "feat/thing",
+            "--journey",
+            "worktree-flow",
+        ],
+    );
+    let worktree = repo.join(".worktrees/feat-thing");
+    assert!(created.contains("created branch `feat/thing`"));
+    assert!(worktree.join("README.md").exists());
+    assert_eq!(
+        git(&worktree, &["branch", "--show-current"]).trim(),
+        "feat/thing"
+    );
+
+    let journey_yaml =
+        fs::read_to_string(home.join("journeys/worktree-flow/journey.yaml")).unwrap();
+    assert!(journey_yaml.contains("name: feat-thing"));
+    assert!(journey_yaml.contains("branch: feat/thing"));
+
+    let removed = journey(
+        &home,
+        &[
+            "worktree",
+            "remove",
+            "feat-thing",
+            "--journey",
+            "worktree-flow",
+        ],
+    );
+    assert!(removed.contains("deleted worktree"));
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn worktree_new_reuses_existing_branches() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    git(&repo, &["branch", "existing"]);
+    git(&repo, &["branch", "checked-out"]);
+    let elsewhere = temp.path().join("elsewhere");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            elsewhere.to_str().unwrap(),
+            "checked-out",
+        ],
+    );
+    journey(&home, &["new", "Reuse", "Branches"]);
+
+    let checked_out = journey(
+        &home,
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "existing",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--journey",
+            "reuse-branches",
+        ],
+    );
+    assert!(checked_out.contains("checked out branch `existing`"));
+    assert!(repo.join(".worktrees/existing").exists());
+
+    let reused = journey(
+        &home,
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "checked-out",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--journey",
+            "reuse-branches",
+        ],
+    );
+    assert!(reused.contains("already checked out"));
+    assert!(reused.contains("linked `elsewhere`"));
+
+    let error = journey_fails(
+        &home,
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "existing",
+            "--from",
+            "HEAD",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--journey",
+            "reuse-branches",
+        ],
+    );
+    assert!(error.contains("--from only applies to new branches"));
+}
+
+#[test]
+fn close_requires_outcome_and_marks_done() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    journey(&home, &["new", "Close", "Flow"]);
+    journey(
+        &home,
+        &["link", repo.to_str().unwrap(), "--journey", "close-flow"],
+    );
+
+    let error = journey_fails(&home, &["close", "close-flow"]);
+    assert!(error.contains("--outcome"));
+
+    let closed = journey(
+        &home,
+        &["close", "close-flow", "--outcome", "Fixed the race"],
+    );
+    assert!(closed.contains("Journey `close-flow` is done (detached 1 worktrees)"));
+    assert!(repo.exists());
+
+    let status = journey(&home, &["status", "close-flow"]);
+    assert!(status.contains("status: done"));
+    let journey_yaml = fs::read_to_string(home.join("journeys/close-flow/journey.yaml")).unwrap();
+    assert!(journey_yaml.contains("outcome: Fixed the race"));
+    let journal = fs::read_to_string(home.join("journeys/close-flow/journal.jsonl")).unwrap();
+    assert!(journal.contains("\"type\":\"close\""));
+    assert!(journal.contains("Fixed the race"));
+
+    let error = journey_fails(&home, &["close", "close-flow", "--outcome", "again"]);
+    assert!(error.contains("already done"));
+
+    let resumed = journey(&home, &["resume", "close-flow"]);
+    assert!(resumed.contains("attached 1 worktrees"));
+    let journey_yaml = fs::read_to_string(home.join("journeys/close-flow/journey.yaml")).unwrap();
+    assert!(!journey_yaml.contains("outcome:"));
+}
+
+#[test]
+fn close_can_remove_worktrees() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+    journey(&home, &["new", "Close", "Remove"]);
+    journey_in(
+        &home,
+        Some(&repo),
+        &[
+            "worktree",
+            "new",
+            "--branch",
+            "side",
+            "--journey",
+            "close-remove",
+        ],
+    );
+    let worktree = repo.join(".worktrees/side");
+    fs::write(worktree.join("dirty.txt"), "dirty\n").unwrap();
+
+    let error = journey_fails(
+        &home,
+        &[
+            "close",
+            "close-remove",
+            "--outcome",
+            "Done",
+            "--remove-worktrees",
+        ],
+    );
+    assert!(error.contains("uncommitted changes"));
+    assert!(worktree.exists());
+
+    fs::remove_file(worktree.join("dirty.txt")).unwrap();
+    let closed = journey(
+        &home,
+        &[
+            "close",
+            "close-remove",
+            "--outcome",
+            "Done",
+            "--remove-worktrees",
+        ],
+    );
+    assert!(closed.contains("removed 1 worktrees"));
+    assert!(!worktree.exists());
+    assert!(repo.exists());
+}
+
+#[test]
+fn guide_is_printed_and_mirrored_to_shared_guidance() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+
+    let guide = journey(&home, &["guide"]);
+    assert!(guide.starts_with("# Journey: guide for agents"));
+    assert!(guide.contains("## When to use it"));
+    assert!(guide.contains("journey close <id> --outcome"));
+
+    let help = journey(&home, &["--help"]);
+    assert!(help.contains("journey guide"));
+
+    journey(&home, &["new", "Guide", "Sync"]);
+    let shared = home.join("JOURNEY-AGENTS.md");
+    assert_eq!(
+        fs::read_to_string(&shared).unwrap().trim_end(),
+        guide.trim_end()
+    );
+
+    let per_journey = home.join("journeys/guide-sync/AGENTS.md");
+    fs::write(&shared, "# stale guidance from an older version\n").unwrap();
+    fs::write(&per_journey, "# my own instructions\n").unwrap();
+
+    journey(&home, &["list"]);
+    assert_eq!(
+        fs::read_to_string(&shared).unwrap().trim_end(),
+        guide.trim_end()
+    );
+    assert_eq!(
+        fs::read_to_string(&per_journey).unwrap(),
+        "# my own instructions\n"
+    );
+}
+
+#[test]
+fn json_output_gives_agents_ids_and_paths() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let repo = temp.path().join("repo");
+    init_repo(&repo);
+
+    let created: serde_json::Value = serde_json::from_str(&journey(
+        &home,
+        &["new", "Json", "Flow", "--description", "Why", "--json"],
+    ))
+    .unwrap();
+    assert_eq!(created["id"], "json-flow");
+    assert_eq!(created["status"], "active");
+    let path = PathBuf::from(created["path"].as_str().unwrap());
+    assert!(path.join("journey.yaml").exists());
+
+    journey(
+        &home,
+        &["link", repo.to_str().unwrap(), "--journey", "json-flow"],
+    );
+    journey(&home, &["doc", "new", "notes", "--journey", "json-flow"]);
+    journey(&home, &["readme", "new", "--journey", "json-flow"]);
+
+    let listed: serde_json::Value =
+        serde_json::from_str(&journey(&home, &["list", "--json"])).unwrap();
+    assert_eq!(listed[0]["id"], "json-flow");
+    assert_eq!(listed[0]["title"], "Json Flow");
+    assert_eq!(listed[0]["repos"][0], "repo");
+    assert_eq!(listed[0]["path"], path.to_str().unwrap());
+
+    let status: serde_json::Value =
+        serde_json::from_str(&journey(&home, &["status", "json-flow", "--json"])).unwrap();
+    assert_eq!(status["description"], "Why");
+    assert_eq!(status["docs"][0], "notes.md");
+    assert_eq!(status["repos"][0]["name"], "repo");
+    assert!(status["repos"][0]["branch"].is_string());
+    assert!(status["readme"].as_str().unwrap().ends_with("README.md"));
+    assert!(status["updated"].is_string());
+
+    let docs: serde_json::Value = serde_json::from_str(&journey(
+        &home,
+        &["doc", "list", "--journey", "json-flow", "--json"],
+    ))
+    .unwrap();
+    assert_eq!(docs[0]["name"], "notes.md");
+    assert!(docs[0]["path"].as_str().unwrap().ends_with("docs/notes.md"));
+
+    let text = journey(&home, &["status", "json-flow"]);
+    assert!(text.contains("docs: 1\n  notes.md"));
+    assert!(text.contains("repos: 1\n  repo\t"));
+}
+
+#[test]
+fn list_search_finds_journeys_across_statuses() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(
+        &home,
+        &["new", "Auth", "Failures", "--description", "Token refresh"],
+    );
+    journey(&home, &["new", "Billing", "Export"]);
+    journey(&home, &["new", "Old", "Auth", "Work"]);
+    journey(&home, &["archive", "old-auth-work"]);
+
+    let found = journey(&home, &["list", "--search", "AUTH"]);
+    assert!(found.contains("auth-failures"));
+    assert!(found.contains("old-auth-work"));
+    assert!(!found.contains("billing-export"));
+
+    let by_description = journey(&home, &["list", "--search", "refresh"]);
+    assert!(by_description.contains("auth-failures"));
+
+    let active_only = journey(&home, &["list", "--search", "auth", "--status", "active"]);
+    assert!(!active_only.contains("old-auth-work"));
+
+    let none = journey(&home, &["list", "--search", "nothing-here"]);
+    assert_eq!(none.trim(), "no Journeys match `nothing-here`");
+
+    let all = journey(&home, &["list", "--all"]);
+    assert!(all.contains("billing-export"));
+    assert!(all.contains("old-auth-work"));
+}
+
+#[test]
+fn side_quest_closes_with_outcome_in_linked_readme() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Memory", "Work"]);
+    journey(&home, &["readme", "new", "--journey", "memory-work"]);
+
+    let created = journey(
+        &home,
+        &[
+            "new",
+            "Fix",
+            "Leak",
+            "--side-quest",
+            "--linked-to",
+            "memory-work",
+        ],
+    );
+    assert!(created.contains("created side-quest `fix-leak`"));
+    assert!(!home.join("journeys/memory-work/fix-leak").exists());
+    let side_quest_yaml = fs::read_to_string(home.join("journeys/fix-leak/journey.yaml")).unwrap();
+    assert!(side_quest_yaml.contains("kind: side-quest"));
+    assert!(side_quest_yaml.contains("- memory-work"));
+
+    let listed = journey(&home, &["list"]);
+    assert!(listed.contains("fix-leak\tactive\t"));
+    assert!(listed.contains("\tside-quest"));
+
+    let parent: serde_json::Value =
+        serde_json::from_str(&journey(&home, &["status", "memory-work", "--json"])).unwrap();
+    assert_eq!(parent["kind"], "journey");
+    assert_eq!(parent["linked_from"][0], "fix-leak");
+
+    let closed = journey(
+        &home,
+        &[
+            "close",
+            "fix-leak",
+            "--outcome",
+            "Dropped the stale listener",
+        ],
+    );
+    assert!(closed.contains("recorded outcome in the README of Journey `memory-work`"));
+
+    let readme = fs::read_to_string(home.join("journeys/memory-work/README.md")).unwrap();
+    assert!(readme.starts_with("# Memory Work\n"));
+    assert!(readme.contains("## Side-quests\n\n- `fix-leak` ("));
+    assert!(readme.contains("): Dropped the stale listener\n"));
+
+    let error = journey_fails(
+        &home,
+        &["new", "Orphan", "--side-quest", "--linked-to", "missing"],
+    );
+    assert!(error.contains("unknown Journey id: missing"));
+}
+
+#[test]
+fn side_quest_without_link_and_with_missing_readme() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Parent"]);
+    journey(&home, &["new", "Loose", "Quest", "--side-quest"]);
+    let closed = journey(
+        &home,
+        &["close", "loose-quest", "--outcome", "Nothing to fix"],
+    );
+    assert!(!closed.contains("recorded outcome"));
+
+    journey(&home, &["new", "Linked", "Quest", "--side-quest"]);
+    journey(&home, &["relate", "parent", "--journey", "linked-quest"]);
+    journey(&home, &["close", "linked-quest", "--outcome", "Fixed"]);
+    let readme = fs::read_to_string(home.join("journeys/parent/README.md")).unwrap();
+    assert!(readme.starts_with("# Parent\n\n## Side-quests\n\n- `linked-quest` ("));
+}
+
+#[test]
+fn relate_unrelate_and_promote() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Main", "Effort"]);
+    journey(&home, &["new", "Quick", "Check", "--side-quest"]);
+    let quest_dir = home.join("journeys/quick-check");
+
+    let related = journey_in(&home, Some(&quest_dir), &["relate", "main-effort"]);
+    assert!(related.contains("related Journey `quick-check` to `main-effort`"));
+    let error = journey_fails(
+        &home,
+        &["relate", "main-effort", "--journey", "quick-check"],
+    );
+    assert!(error.contains("already related"));
+    let error = journey_fails(
+        &home,
+        &["relate", "quick-check", "--journey", "quick-check"],
+    );
+    assert!(error.contains("cannot be related to itself"));
+
+    let status = journey(&home, &["status", "quick-check"]);
+    assert!(status.contains("kind: side-quest"));
+    assert!(status.contains("related to: main-effort"));
+
+    let unrelated = journey(
+        &home,
+        &["unrelate", "main-effort", "--journey", "quick-check"],
+    );
+    assert!(unrelated.contains("unrelated"));
+    assert!(!journey(&home, &["status", "quick-check"]).contains("related to"));
+
+    let promoted = journey(&home, &["promote", "quick-check"]);
+    assert!(promoted.contains("promoted side-quest `quick-check` to a journey"));
+    assert!(quest_dir.join("journey.yaml").exists());
+    assert!(journey(&home, &["status", "quick-check"]).contains("kind: journey"));
+    let error = journey_fails(&home, &["promote", "quick-check"]);
+    assert!(error.contains("is not a side-quest"));
+
+    let journal = fs::read_to_string(quest_dir.join("journal.jsonl")).unwrap();
+    assert!(journal.contains("\"type\":\"relate\""));
+    assert!(journal.contains("\"type\":\"unrelate\""));
+    assert!(journal.contains("\"type\":\"promote\""));
+}
+
+#[test]
+fn skills_install_update_and_remove() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    let dir = temp.path().join("skills");
+    let dir_arg = dir.to_str().unwrap();
+
+    let installed = journey(&home, &["skills", "install", "--dir", dir_arg]);
+    assert_eq!(installed.matches("installed: ").count(), 3);
+    let start = dir.join("journey-start/SKILL.md");
+    assert!(fs::read_to_string(&start)
+        .unwrap()
+        .starts_with("---\nname: journey-start\n"));
+
+    let again = journey(&home, &["skills", "install", "--dir", dir_arg]);
+    assert_eq!(again.matches("up to date: ").count(), 3);
+
+    fs::write(&start, "---\nname: journey-start\nold\n").unwrap();
+    let updated = journey(&home, &["skills", "install", "--dir", dir_arg]);
+    assert!(updated.contains("updated: "));
+
+    fs::create_dir_all(dir.join("other-skill")).unwrap();
+    fs::write(
+        dir.join("journey-resume/SKILL.md"),
+        "---\nname: my-own\n---\n",
+    )
+    .unwrap();
+    let removed = journey(&home, &["skills", "remove", "--dir", dir_arg]);
+    assert!(removed.contains("skipped (not a Journey skill)"));
+    assert!(!dir.join("journey-start").exists());
+    assert!(!dir.join("journey-side-quest").exists());
+    assert!(dir.join("journey-resume").exists());
+    assert!(dir.join("other-skill").exists());
+}
+
+#[test]
+fn migrate_upgrades_only_unedited_legacy_files() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("journey-home");
+    journey(&home, &["new", "Pointer"]);
+    journey(&home, &["new", "Inline"]);
+    journey(&home, &["new", "Edited"]);
+    let journeys = home.join("journeys");
+    let current = fs::read_to_string(journeys.join("pointer/AGENTS.md")).unwrap();
+
+    let legacy_pointer = format!(
+        "# AGENTS.md\n\n@{}\n\nRead the shared Journey guidance first, then read `journey.yaml` in this directory to understand this effort.\n",
+        "/old/home/.journey/JOURNEY-AGENTS.md"
+    );
+    fs::write(journeys.join("pointer/AGENTS.md"), &legacy_pointer).unwrap();
+    fs::write(
+        journeys.join("inline/AGENTS.md"),
+        include_str!("../src/legacy/agents-2.md"),
+    )
+    .unwrap();
+    fs::remove_file(journeys.join("inline/CLAUDE.md")).unwrap();
+    let edited = format!("{legacy_pointer}\nMy own notes.\n");
+    fs::write(journeys.join("edited/AGENTS.md"), &edited).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        include_str!("../src/legacy/config-5.toml"),
+    )
+    .unwrap();
+
+    let doctor = journey(&home, &["doctor"]);
+    assert!(doctor.contains("4 migration steps pending"));
+    assert!(!doctor.contains("--repair"));
+
+    let dry_run = journey(&home, &["migrate", "--dry-run"]);
+    assert_eq!(dry_run.matches("would ").count(), 4);
+    assert_eq!(
+        fs::read_to_string(journeys.join("pointer/AGENTS.md")).unwrap(),
+        legacy_pointer
+    );
+    assert!(home.join("config.toml").exists());
+
+    let migrated = journey(&home, &["migrate"]);
+    assert!(migrated.contains("updated: "));
+    assert!(migrated.contains("created: "));
+    assert!(migrated.contains("removed: "));
+    for id in ["pointer", "inline"] {
+        assert_eq!(
+            fs::read_to_string(journeys.join(id).join("AGENTS.md")).unwrap(),
+            current
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(journeys.join("inline/CLAUDE.md")).unwrap(),
+        "@AGENTS.md\n"
+    );
+    assert_eq!(
+        fs::read_to_string(journeys.join("edited/AGENTS.md")).unwrap(),
+        edited
+    );
+    assert!(!home.join("config.toml").exists());
+
+    assert_eq!(journey(&home, &["migrate"]).trim(), "nothing to migrate");
+    assert!(journey(&home, &["doctor"]).starts_with("doctor: ok"));
+
+    fs::write(home.join("config.toml"), "[shortcuts]\npause = \"z\"\n").unwrap();
+    let kept = journey(&home, &["migrate"]);
+    assert!(kept.contains("nothing to migrate"));
+    assert!(kept.contains("note: ") && kept.contains("has your edits and is kept"));
+    assert!(home.join("config.toml").exists());
 }
